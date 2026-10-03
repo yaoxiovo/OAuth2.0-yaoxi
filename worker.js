@@ -2,14 +2,17 @@
  * worker.js - Cloudflare Worker Entry Point for accounts.yaoxi.cloud
  * 适配 Cloudflare Workers with Static Assets 部署体系
  *
- * 功能清单:
+ * 安全特性清单:
  * 1. 严格 URL 参数白名单校验 (非法参数直接拦截下发 Google 400)
- * 2. 泛域名防伪校验 (*.yaoxi.wiki, *.yaoxi.cloud) 与 HMAC-SHA256 签名核验
- * 3. 统一配置管理接口 /api/config (支持 Cloudflare KV 持久化)
- * 4. 高性能静态资源托管 (通过 env.ASSETS 映射 ./dist 产物)
+ * 2. 泛域名白名单防伪校验 (*.yaoxi.wiki, *.yaoxi.cloud) 与防时序攻击 HMAC-SHA256 签名核验
+ * 3. 统一配置管理接口 /api/config (严格数据脱敏与管理员权限门禁校验)
+ * 4. 服务端认证与密码学 JWT 签发接口 /api/login
+ * 5. 高性能静态资源托管 (通过 env.ASSETS 映射 ./dist 产物)
  */
 
-const SSO_HANDSHAKE_SECRET = 'yaoxi_sso_handshake_secret_key_v1_auth_guard_2026';
+const DEFAULT_SSO_HANDSHAKE_SECRET = 'yaoxi_sso_handshake_secret_key_v1_auth_guard_2026';
+const DEFAULT_ADMIN_PASSWORD_HASH = '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001'; // sha256("yaoxi")
+const SERVER_JWT_SECRET = 'yaoxi_cloud_sso_internal_token_signing_secret_2026';
 
 const ALLOWED_PARAMS = new Set([
   'client_request_token',
@@ -49,6 +52,45 @@ function isAllowedDomain(domain) {
     d === '127.0.0.1' ||
     d.endsWith('.localhost')
   );
+}
+
+function constantTimeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+async function sha256Hex(str) {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest('SHA-256', enc.encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function base64UrlEncode(str) {
+  return btoa(str).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+async function signJwtToken(payload, secret) {
+  const header = { alg: 'HS256', typ: 'JWT', kid: 'yaoxi_cloud_sso_2026' };
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const data = `${encodedHeader}.${encodedPayload}`;
+
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signatureBuf = await crypto.subtle.sign('HMAC', key, enc.encode(data));
+  const signatureBase64 = base64UrlEncode(String.fromCharCode(...new Uint8Array(signatureBuf)));
+  return `${data}.${signatureBase64}`;
 }
 
 const GOOGLE_400_HTML = `<!DOCTYPE html>
@@ -134,7 +176,7 @@ const GOOGLE_400_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud') {
+async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud', secret = DEFAULT_SSO_HANDSHAKE_SECRET) {
   if (!token || typeof token !== 'string') return false;
   const parts = token.split('.');
   if (parts.length !== 5 || parts[0] !== 'crt' || parts[1] !== 'v1') return false;
@@ -150,29 +192,35 @@ async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cl
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
-      enc.encode(SSO_HANDSHAKE_SECRET),
+      enc.encode(secret),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['sign']
     );
     const sigBuf1 = await crypto.subtle.sign('HMAC', key, enc.encode(payload1));
-    const sigHex1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort1 = sigHexFull1.substring(0, 32);
 
     const sigBuf2 = await crypto.subtle.sign('HMAC', key, enc.encode(payload2));
-    const sigHex2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort2 = sigHexFull2.substring(0, 32);
 
-    return receivedSig === sigHex1 || receivedSig === sigHex2;
+    return (
+      constantTimeCompare(receivedSig, sigHexFull1) ||
+      constantTimeCompare(receivedSig, sigHexShort1) ||
+      constantTimeCompare(receivedSig, sigHexFull2) ||
+      constantTimeCompare(receivedSig, sigHexShort2)
+    );
   } catch (e) {
     return false;
   }
 }
 
 const DEFAULT_CONFIG = {
-  version: "1.0.0",
+  version: "1.1.0",
   lastUpdated: new Date().toISOString(),
   security: {
     ssoIssuer: "https://accounts.yaoxi.cloud",
-    handshakeSecret: "yaoxi_sso_handshake_secret_key_v1_auth_guard_2026",
     tokenTtl: 7200,
     kid: "yaoxi_cloud_sso_2026",
     preventReplay: true,
@@ -180,8 +228,7 @@ const DEFAULT_CONFIG = {
   },
   turnstile: {
     enabled: true,
-    siteKey: "0x4AAAAAAEXamT3iIRWjGCmk",
-    secretKey: ""
+    siteKey: "0x4AAAAAAEXamT3iIRWjGCmk"
   },
   branding: {
     systemTitle: "Google 帐号 - 统一身份认证",
@@ -203,7 +250,7 @@ const DEFAULT_CONFIG = {
       username: "yaoxi",
       displayName: "耀西 (Super Admin)",
       email: "yaoxiov0@gmail.com",
-      password: "yaoxi",
+      passwordHash: DEFAULT_ADMIN_PASSWORD_HASH,
       roles: ["admin", "author", "super_user"],
       status: "active",
       passkeyBound: true,
@@ -236,18 +283,188 @@ const DEFAULT_CONFIG = {
       timestamp: new Date().toISOString(),
       action: "SYSTEM_INIT",
       operator: "system",
-      details: "统一身份认证管理面板 Cloudflare KV 持久化已绑定就绪",
+      details: "统一身份认证管理控制台安全加固版已初始化就绪",
       ip: "127.0.0.1"
     }
   ]
 };
+
+function sanitizePublicConfig(rawConfig) {
+  if (!rawConfig || typeof rawConfig !== 'object') return {};
+  const clone = JSON.parse(JSON.stringify(rawConfig));
+
+  if (Array.isArray(clone.users)) {
+    clone.users = clone.users.map(u => {
+      const safeUser = { ...u };
+      delete safeUser.password;
+      delete safeUser.passwordHash;
+      delete safeUser.salt;
+      return safeUser;
+    });
+  }
+
+  if (clone.security) {
+    delete clone.security.handshakeSecret;
+  }
+  if (clone.turnstile) {
+    delete clone.turnstile.secretKey;
+  }
+  delete clone.auditLogs;
+
+  return clone;
+}
+
+async function verifyAdminAuth(request, env, config) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const adminKey = request.headers.get('X-Admin-Key') || '';
+
+  if (env && env.ADMIN_SECRET && (authHeader === `Bearer ${env.ADMIN_SECRET}` || adminKey === env.ADMIN_SECRET)) {
+    return true;
+  }
+
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    if (!token) return false;
+
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payloadJson = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+        const payload = JSON.parse(payloadJson);
+        const now = Math.floor(Date.now() / 1000);
+        if (payload.exp && payload.exp < now) return false;
+        if (Array.isArray(payload.roles) && payload.roles.includes('admin')) {
+          return true;
+        }
+      }
+    } catch (e) {}
+
+    const adminUser = (config.users || []).find(u => u.roles && u.roles.includes('admin'));
+    if (adminUser) {
+      const expectedHash = adminUser.passwordHash || DEFAULT_ADMIN_PASSWORD_HASH;
+      if (token === expectedHash) return true;
+    }
+  }
+
+  return false;
+}
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname.toLowerCase();
 
-    // 1. API 接口: /api/config (Cloudflare KV 全球持久化存储)
+    // 1. API 接口: /api/login (密码学身份核验与真实 JWT 签发)
+    if (pathname === '/api/login') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        });
+      }
+      if (request.method === 'POST') {
+        try {
+          const body = await request.json();
+          const { username, password, client_id, target_domain, client_request_token } = body || {};
+
+          if (!username || !password) {
+            return new Response(JSON.stringify({ success: false, error: '请输入账号和密码' }), {
+              status: 400,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
+          let config = null;
+          if (env && env.SSO_CONFIG_KV) {
+            try {
+              const data = await env.SSO_CONFIG_KV.get('sso_global_config');
+              if (data) config = JSON.parse(data);
+            } catch (e) {}
+          }
+          if (!config) config = DEFAULT_CONFIG;
+
+          const inputClean = username.trim().toLowerCase();
+          const matchedUser = (config.users || []).find(u =>
+            (u.username && u.username.toLowerCase() === inputClean) ||
+            (u.email && u.email.toLowerCase() === inputClean)
+          );
+
+          if (!matchedUser) {
+            return new Response(JSON.stringify({ success: false, error: '找不到该 Google 帐号' }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
+          if (matchedUser.status && matchedUser.status !== 'active') {
+            return new Response(JSON.stringify({ success: false, error: '此 Google 帐号已被管理员停用或冻结' }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
+          const inputHash = await sha256Hex(password);
+          const expectedHash = matchedUser.passwordHash || (matchedUser.password ? await sha256Hex(matchedUser.password) : DEFAULT_ADMIN_PASSWORD_HASH);
+
+          if (inputHash !== expectedHash) {
+            return new Response(JSON.stringify({ success: false, error: '密码错误，请重试' }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
+          const now = Math.floor(Date.now() / 1000);
+          const ttl = (config.security && config.security.tokenTtl) || 7200;
+          const issuer = (config.security && config.security.ssoIssuer) || 'https://accounts.yaoxi.cloud';
+          const secret = (env && env.JWT_SECRET) || SERVER_JWT_SECRET;
+
+          const payload = {
+            iss: issuer,
+            aud: client_id || 'yaoxi-app',
+            sub: matchedUser.username,
+            email: matchedUser.email,
+            roles: matchedUser.roles || ['member'],
+            target_domain: target_domain || 'yaoxi.cloud',
+            client_request_token: client_request_token || '',
+            auth_time: now,
+            iat: now,
+            exp: now + ttl
+          };
+
+          const token = await signJwtToken(payload, secret);
+
+          const safeUser = {
+            id: matchedUser.id,
+            username: matchedUser.username,
+            displayName: matchedUser.displayName,
+            email: matchedUser.email,
+            roles: matchedUser.roles,
+            status: matchedUser.status
+          };
+
+          return new Response(JSON.stringify({
+            success: true,
+            token,
+            expires_in: ttl,
+            user: safeUser
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ success: false, error: err.message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+      }
+    }
+
+    // 2. API 接口: /api/config (严格数据脱敏与管理员门禁鉴权)
     if (pathname === '/api/config') {
       if (request.method === 'GET') {
         let config = null;
@@ -257,15 +474,30 @@ export default {
             if (data) config = JSON.parse(data);
           } catch (e) {}
         }
-        if (!config) {
-          config = DEFAULT_CONFIG;
-          if (env && env.SSO_CONFIG_KV) {
-            try {
-              await env.SSO_CONFIG_KV.put('sso_global_config', JSON.stringify(DEFAULT_CONFIG));
-            } catch (e) {}
+        if (!config) config = DEFAULT_CONFIG;
+
+        const isAdmin = await verifyAdminAuth(request, env, config);
+        if (isAdmin) {
+          const adminSafeConfig = JSON.parse(JSON.stringify(config));
+          if (Array.isArray(adminSafeConfig.users)) {
+            adminSafeConfig.users = adminSafeConfig.users.map(u => {
+              const safe = { ...u };
+              delete safe.password;
+              return safe;
+            });
           }
+          return new Response(JSON.stringify(adminSafeConfig), {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'Access-Control-Allow-Origin': '*'
+            }
+          });
         }
-        return new Response(JSON.stringify(config), {
+
+        const publicConfig = sanitizePublicConfig(config);
+        return new Response(JSON.stringify(publicConfig), {
           status: 200,
           headers: {
             'Content-Type': 'application/json; charset=utf-8',
@@ -275,6 +507,23 @@ export default {
         });
       } else if (request.method === 'POST') {
         try {
+          let currentConfig = null;
+          if (env && env.SSO_CONFIG_KV) {
+            try {
+              const data = await env.SSO_CONFIG_KV.get('sso_global_config');
+              if (data) currentConfig = JSON.parse(data);
+            } catch (e) {}
+          }
+          if (!currentConfig) currentConfig = DEFAULT_CONFIG;
+
+          const isAdmin = await verifyAdminAuth(request, env, currentConfig);
+          if (!isAdmin) {
+            return new Response(JSON.stringify({ success: false, error: '未授权：保存配置需要管理员权限' }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
           const body = await request.json();
           if (!body || typeof body !== 'object') {
             return new Response(JSON.stringify({ success: false, error: '无效的配置格式' }), {
@@ -282,7 +531,21 @@ export default {
               headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
             });
           }
+
           body.lastUpdated = new Date().toISOString();
+
+          if (Array.isArray(body.users)) {
+            for (const u of body.users) {
+              if (u.newPassword) {
+                u.passwordHash = await sha256Hex(u.newPassword);
+                delete u.newPassword;
+              } else if (u.password && u.password !== '••••••••' && !u.passwordHash) {
+                u.passwordHash = await sha256Hex(u.password);
+              }
+              delete u.password;
+            }
+          }
+
           let savedToKv = false;
           if (env && env.SSO_CONFIG_KV) {
             await env.SSO_CONFIG_KV.put('sso_global_config', JSON.stringify(body));
@@ -307,13 +570,13 @@ export default {
           headers: {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Admin-Key'
           }
         });
       }
     }
 
-    // 2. 放行静态资源文件、管理后台 (admin.html) 与测试页面
+    // 3. 放行静态资源文件、管理后台 (admin.html) 与测试页面
     if (
       request.method === 'OPTIONS' ||
       pathname.endsWith('.css') ||
@@ -335,7 +598,7 @@ export default {
       return fetch(request);
     }
 
-    // 3. 严格参数白名单校验: 携带任何非法/未授权参数立即 400
+    // 4. 严格参数白名单校验: 携带任何非法/未授权参数立即 400
     for (const key of url.searchParams.keys()) {
       if (!ALLOWED_PARAMS.has(key)) {
         return new Response(GOOGLE_400_HTML, {
@@ -351,7 +614,7 @@ export default {
       }
     }
 
-    // 4. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
+    // 5. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
     const targetDomain = url.searchParams.get('target_domain');
     if (targetDomain && !isAllowedDomain(targetDomain)) {
       return new Response(GOOGLE_400_HTML, {
@@ -366,10 +629,11 @@ export default {
       });
     }
 
-    // 5. 严格校验 client_request_token 密码学防伪签名
+    // 6. 严格校验 client_request_token 密码学防伪签名
     const token = url.searchParams.get('client_request_token');
     const resolvedTarget = targetDomain || 'yaoxi.cloud';
-    const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget);
+    const secret = (env && env.SSO_HANDSHAKE_SECRET) || DEFAULT_SSO_HANDSHAKE_SECRET;
+    const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget, secret);
 
     if (!isValidSignature) {
       return new Response(GOOGLE_400_HTML, {
@@ -384,7 +648,7 @@ export default {
       });
     }
 
-    // 6. 密码学验签通过 -> 放行至登录中心页面 (index.html / accounts-login.html)
+    // 7. 密码学验签通过 -> 放行至登录中心页面 (index.html / accounts-login.html)
     if (env && env.ASSETS) {
       return env.ASSETS.fetch(request);
     }

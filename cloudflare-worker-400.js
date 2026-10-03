@@ -129,7 +129,17 @@ const GOOGLE_400_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud') {
+function constantTimeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud', secret = SSO_HANDSHAKE_SECRET) {
   if (!token || typeof token !== 'string') return false;
   const parts = token.split('.');
   if (parts.length !== 5 || parts[0] !== 'crt' || parts[1] !== 'v1') return false;
@@ -145,18 +155,25 @@ async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cl
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
-      enc.encode(SSO_HANDSHAKE_SECRET),
+      enc.encode(secret),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['sign']
     );
     const sigBuf1 = await crypto.subtle.sign('HMAC', key, enc.encode(payload1));
-    const sigHex1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort1 = sigHexFull1.substring(0, 32);
 
     const sigBuf2 = await crypto.subtle.sign('HMAC', key, enc.encode(payload2));
-    const sigHex2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort2 = sigHexFull2.substring(0, 32);
 
-    return receivedSig === sigHex1 || receivedSig === sigHex2;
+    return (
+      constantTimeCompare(receivedSig, sigHexFull1) ||
+      constantTimeCompare(receivedSig, sigHexShort1) ||
+      constantTimeCompare(receivedSig, sigHexFull2) ||
+      constantTimeCompare(receivedSig, sigHexShort2)
+    );
   } catch (e) {
     return false;
   }
@@ -164,32 +181,48 @@ async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cl
 
 export default {
   async fetch(request, env, ctx) {
-  const url = new URL(request.url);
-  const pathname = url.pathname.toLowerCase();
+    const url = new URL(request.url);
+    const pathname = url.pathname.toLowerCase();
 
-  // 1. 放行静态资源文件 (.css, .js, .png, .ico, .svg 等)、后台管理面板与 API 路由
-  if (
-    request.method === 'OPTIONS' ||
-    pathname.endsWith('.css') ||
-    pathname.endsWith('.js') ||
-    pathname.endsWith('.png') ||
-    pathname.endsWith('.jpg') ||
-    pathname.endsWith('.jpeg') ||
-    pathname.endsWith('.ico') ||
-    pathname.endsWith('.svg') ||
-    pathname.endsWith('.json') ||
-    pathname.endsWith('.woff') ||
-    pathname.endsWith('.woff2') ||
-    pathname.includes('client-blog') ||
-    pathname.includes('admin') ||
-    pathname.startsWith('/api/')
-  ) {
-    return fetch(request);
-  }
+    // 1. 放行静态资源文件 (.css, .js, .png, .ico, .svg 等)、后台管理面板与 API 路由
+    if (
+      request.method === 'OPTIONS' ||
+      pathname.endsWith('.css') ||
+      pathname.endsWith('.js') ||
+      pathname.endsWith('.png') ||
+      pathname.endsWith('.jpg') ||
+      pathname.endsWith('.jpeg') ||
+      pathname.endsWith('.ico') ||
+      pathname.endsWith('.svg') ||
+      pathname.endsWith('.json') ||
+      pathname.endsWith('.woff') ||
+      pathname.endsWith('.woff2') ||
+      pathname.includes('client-blog') ||
+      pathname.includes('admin') ||
+      pathname.startsWith('/api/')
+    ) {
+      return fetch(request);
+    }
 
-  // 2. 严格参数白名单校验: 携带任何非法/额外参数立即 400
-  for (const key of url.searchParams.keys()) {
-    if (!ALLOWED_PARAMS.has(key)) {
+    // 2. 严格参数白名单校验: 携带任何非法/额外参数立即 400
+    for (const key of url.searchParams.keys()) {
+      if (!ALLOWED_PARAMS.has(key)) {
+        return new Response(GOOGLE_400_HTML, {
+          status: 400,
+          statusText: 'Bad Request',
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'X-Robots-Tag': 'noindex, nofollow'
+          }
+        });
+      }
+    }
+
+    // 3. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
+    const targetDomain = url.searchParams.get('target_domain');
+    if (targetDomain && !isAllowedDomain(targetDomain)) {
       return new Response(GOOGLE_400_HTML, {
         status: 400,
         statusText: 'Bad Request',
@@ -201,42 +234,26 @@ export default {
         }
       });
     }
+
+    // 4. 严格校验 client_request_token 密码学防伪签名
+    const token = url.searchParams.get('client_request_token');
+    const resolvedTarget = targetDomain || 'yaoxi.cloud';
+    const secret = (env && env.SSO_HANDSHAKE_SECRET) || SSO_HANDSHAKE_SECRET;
+    const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget, secret);
+
+    if (!isValidSignature) {
+      return new Response(GOOGLE_400_HTML, {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+          'X-Robots-Tag': 'noindex, nofollow'
+        }
+      });
+    }
+
+    return fetch(request);
   }
-
-  // 3. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
-  const targetDomain = url.searchParams.get('target_domain');
-  if (targetDomain && !isAllowedDomain(targetDomain)) {
-    return new Response(GOOGLE_400_HTML, {
-      status: 400,
-      statusText: 'Bad Request',
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'X-Robots-Tag': 'noindex, nofollow'
-      }
-    });
-  }
-
-  // 4. 严格校验 client_request_token 密码学防伪签名
-  const token = url.searchParams.get('client_request_token');
-  const resolvedTarget = targetDomain || 'yaoxi.cloud';
-  const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget);
-
-  if (!isValidSignature) {
-    return new Response(GOOGLE_400_HTML, {
-      status: 400,
-      statusText: 'Bad Request',
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'X-Robots-Tag': 'noindex, nofollow'
-      }
-    });
-  }
-
-  return fetch(request);
-}
-
 };

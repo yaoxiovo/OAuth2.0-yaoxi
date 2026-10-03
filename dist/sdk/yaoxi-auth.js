@@ -134,6 +134,19 @@
           const data = event.data;
           if (!data || data.type !== 'YAOXI_SSO_SIGNATURE_CALLBACK') return;
 
+          // 严格校验发送方 Origin 来源 (Strict Origin Verification)
+          let expectedOrigin = '';
+          try {
+            expectedOrigin = new URL(this.authUrl).origin;
+          } catch (e) {
+            expectedOrigin = 'https://accounts.yaoxi.cloud';
+          }
+
+          if (event.origin !== expectedOrigin && event.origin !== 'https://accounts.yaoxi.cloud') {
+            console.warn('[YaoxiAuth SDK] Rejected cross-origin message from unauthorized origin:', event.origin);
+            return;
+          }
+
           // 校验回传与凭据绑定
           if (data.client_request_token !== clientRequestToken) {
             console.warn('[YaoxiAuth SDK] Received token does not match request token.');

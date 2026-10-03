@@ -129,7 +129,17 @@ const GOOGLE_400_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud') {
+function constantTimeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cloud', secret = SSO_HANDSHAKE_SECRET) {
   if (!token || typeof token !== 'string') return false;
   const parts = token.split('.');
   if (parts.length !== 5 || parts[0] !== 'crt' || parts[1] !== 'v1') return false;
@@ -145,18 +155,25 @@ async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cl
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
-      enc.encode(SSO_HANDSHAKE_SECRET),
+      enc.encode(secret),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
       ['sign']
     );
     const sigBuf1 = await crypto.subtle.sign('HMAC', key, enc.encode(payload1));
-    const sigHex1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull1 = Array.from(new Uint8Array(sigBuf1)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort1 = sigHexFull1.substring(0, 32);
 
     const sigBuf2 = await crypto.subtle.sign('HMAC', key, enc.encode(payload2));
-    const sigHex2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+    const sigHexFull2 = Array.from(new Uint8Array(sigBuf2)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const sigHexShort2 = sigHexFull2.substring(0, 32);
 
-    return receivedSig === sigHex1 || receivedSig === sigHex2;
+    return (
+      constantTimeCompare(receivedSig, sigHexFull1) ||
+      constantTimeCompare(receivedSig, sigHexShort1) ||
+      constantTimeCompare(receivedSig, sigHexFull2) ||
+      constantTimeCompare(receivedSig, sigHexShort2)
+    );
   } catch (e) {
     return false;
   }
@@ -220,7 +237,8 @@ export async function onRequest(context) {
   // 4. 严格校验 client_request_token 密码学防伪签名
   const token = url.searchParams.get('client_request_token');
   const resolvedTarget = targetDomain || 'yaoxi.cloud';
-  const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget);
+  const secret = (context.env && context.env.SSO_HANDSHAKE_SECRET) || SSO_HANDSHAKE_SECRET;
+  const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget, secret);
 
   if (!isValidSignature) {
     return new Response(GOOGLE_400_HTML, {

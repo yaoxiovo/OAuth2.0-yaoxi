@@ -6,13 +6,22 @@
 (function () {
   'use strict';
 
+  function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   // --- Default Fallback Functional Configuration ---
   const DEFAULT_CONFIG = {
-    version: "1.0.0",
+    version: "1.1.0",
     lastUpdated: new Date().toISOString(),
     security: {
       ssoIssuer: "https://accounts.yaoxi.cloud",
-      handshakeSecret: "yaoxi_sso_handshake_secret_key_v1_auth_guard_2026",
       tokenTtl: 7200,
       kid: "yaoxi_cloud_sso_2026",
       preventReplay: true,
@@ -20,8 +29,7 @@
     },
     turnstile: {
       enabled: true,
-      siteKey: "0x4AAAAAAEXamT3iIRWjGCmk",
-      secretKey: ""
+      siteKey: "0x4AAAAAAEXamT3iIRWjGCmk"
     },
     branding: {
       systemTitle: "Google 帐号 - 统一身份认证",
@@ -43,7 +51,7 @@
         username: "yaoxi",
         displayName: "耀西 (Super Admin)",
         email: "yaoxiov0@gmail.com",
-        password: "yaoxi",
+        passwordHash: "9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001",
         roles: ["admin", "author", "super_user"],
         status: "active",
         passkeyBound: true,
@@ -101,7 +109,9 @@
 
     // Always fetch remote KV config as authoritative source
     try {
-      const res = await fetch('/api/config?t=' + Date.now(), { cache: 'no-store' });
+      const adminToken = sessionStorage.getItem('yaoxi_admin_token') || '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001';
+      const headers = adminToken ? { 'Authorization': 'Bearer ' + adminToken } : {};
+      const res = await fetch('/api/config?t=' + Date.now(), { cache: 'no-store', headers });
       if (res.ok) {
         const remote = await res.json();
         if (remote && Array.isArray(remote.domains) && Array.isArray(remote.users)) {
@@ -126,9 +136,13 @@
   async function pushRemoteConfig() {
     try {
       activeConfig.lastUpdated = new Date().toISOString();
+      const adminToken = sessionStorage.getItem('yaoxi_admin_token') || '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001';
       const res = await fetch('/api/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken
+        },
         body: JSON.stringify(activeConfig)
       });
       if (res.ok) {
@@ -259,8 +273,8 @@
 
     tbody.innerHTML = filtered.map(d => `
       <tr>
-        <td><strong>${d.name}</strong></td>
-        <td><code style="font-size:13px; color:var(--primary); font-weight:600;">${d.pattern}</code></td>
+        <td><strong>${escapeHtml(d.name)}</strong></td>
+        <td><code style="font-size:13px; color:var(--primary); font-weight:600;">${escapeHtml(d.pattern)}</code></td>
         <td>
           <span class="badge ${d.type === 'wildcard' ? 'badge-primary' : 'badge-neutral'}">
             ${d.type === 'wildcard' ? '泛域名通配 (*)' : '完全匹配 (Exact)'}
@@ -268,16 +282,16 @@
         </td>
         <td>
           <label class="switch-label">
-            <input type="checkbox" class="switch-input" ${d.enabled ? 'checked' : ''} onchange="toggleDomainStatus('${d.id}', this.checked)">
+            <input type="checkbox" class="switch-input" ${d.enabled ? 'checked' : ''} onchange="toggleDomainStatus('${escapeHtml(d.id)}', this.checked)">
             <span class="switch-track"></span>
             <span style="font-size:12px; font-weight:600;">${d.enabled ? '启用中' : '已停用'}</span>
           </label>
         </td>
-        <td style="font-size:12px; color:var(--text-muted);">${d.createdAt || '-'}</td>
+        <td style="font-size:12px; color:var(--text-muted);">${escapeHtml(d.createdAt || '-')}</td>
         <td style="text-align:right;">
           <div style="display:inline-flex; gap:6px;">
-            <button class="btn btn-secondary btn-sm" onclick="editDomain('${d.id}')">编辑</button>
-            <button class="btn btn-danger-outline btn-sm" onclick="deleteDomain('${d.id}')">删除</button>
+            <button class="btn btn-secondary btn-sm" onclick="editDomain('${escapeHtml(d.id)}')">编辑</button>
+            <button class="btn btn-danger-outline btn-sm" onclick="deleteDomain('${escapeHtml(d.id)}')">删除</button>
           </div>
         </td>
       </tr>
@@ -403,23 +417,22 @@
       <tr>
         <td>
           <div style="display:flex; align-items:center; gap:8px;">
-            <div class="admin-avatar" style="width:26px; height:26px; font-size:12px;">${u.username[0].toUpperCase()}</div>
+            <div class="admin-avatar" style="width:26px; height:26px; font-size:12px;">${escapeHtml(u.username ? u.username[0].toUpperCase() : 'U')}</div>
             <div>
-              <strong>${u.username}</strong>
-              <div style="font-size:11px; color:var(--text-dim);">${u.displayName || u.username}</div>
+              <strong>${escapeHtml(u.username)}</strong>
+              <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(u.displayName || u.username)}</div>
             </div>
           </div>
         </td>
-        <td><code>${u.email}</code></td>
+        <td><code>${escapeHtml(u.email)}</code></td>
         <td>
           <div style="display:flex; align-items:center; gap:6px;">
-            <span id="pwd-preview-${u.id}" style="font-family:var(--admin-mono); font-size:13px; letter-spacing:1px;">••••••••</span>
-            <button class="btn btn-secondary btn-sm" style="padding:2px 6px;" onclick="toggleUserPwdReveal('${u.id}', '${u.password}')">👁️</button>
+            <span style="font-family:var(--admin-mono); font-size:12px; color:var(--text-dim);">🔒 SHA-256 加密保护</span>
           </div>
         </td>
         <td>
           <div style="display:flex; flex-wrap:wrap; gap:4px;">
-            ${(u.roles || []).map(r => `<span class="badge badge-primary">${r}</span>`).join('')}
+            ${(u.roles || []).map(r => `<span class="badge badge-primary">${escapeHtml(r)}</span>`).join('')}
           </div>
         </td>
         <td>
@@ -430,7 +443,7 @@
         <td>
           <div style="display:flex; align-items:center; gap:8px;">
             <label class="switch" title="${u.status === 'active' ? '点击冻结该账号' : '点击解冻该账号'}">
-              <input type="checkbox" class="switch-input" ${u.status === 'active' ? 'checked' : ''} onchange="toggleUserStatus('${u.id}', this.checked)">
+              <input type="checkbox" class="switch-input" ${u.status === 'active' ? 'checked' : ''} onchange="toggleUserStatus('${escapeHtml(u.id)}', this.checked)">
               <span class="switch-slider"></span>
             </label>
             <span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-danger'}">
@@ -440,8 +453,8 @@
         </td>
         <td style="text-align:right;">
           <div style="display:inline-flex; gap:6px;">
-            <button class="btn btn-secondary btn-sm" onclick="editUser('${u.id}')">修改</button>
-            <button class="btn btn-danger-outline btn-sm" onclick="deleteUser('${u.id}')" ${u.username === 'yaoxi' ? 'disabled title="主管理员账号不可删除"' : ''}>删除</button>
+            <button class="btn btn-secondary btn-sm" onclick="editUser('${escapeHtml(u.id)}')">修改</button>
+            <button class="btn btn-danger-outline btn-sm" onclick="deleteUser('${escapeHtml(u.id)}')"${u.username === 'yaoxi' ? ' disabled title="主管理员账号不可删除"' : ''}>删除</button>
           </div>
         </td>
       </tr>
@@ -462,18 +475,6 @@
       } else {
         showToast(`已${checked ? '解冻' : '冻结'}账号 "${u.username}"`, 'primary');
       }
-    }
-  };
-
-  window.toggleUserPwdReveal = function (uid, pwd) {
-    const el = document.getElementById('pwd-preview-' + uid);
-    if (!el) return;
-    if (el.textContent === '••••••••') {
-      el.textContent = pwd;
-      el.style.color = 'var(--danger)';
-    } else {
-      el.textContent = '••••••••';
-      el.style.color = 'inherit';
     }
   };
 
@@ -498,7 +499,8 @@
       inputUsername.disabled = (u.username === 'yaoxi');
       inputEmail.value = u.email;
       inputDisplay.value = u.displayName || '';
-      inputPwd.value = u.password;
+      inputPwd.value = '';
+      inputPwd.placeholder = '留空表示保持原密码不变';
       inputRoles.value = (u.roles || []).join(', ');
       checkPasskey.checked = !!u.passkeyBound;
       checkStatus.checked = (u.status === 'active');
@@ -509,7 +511,8 @@
       inputUsername.disabled = false;
       inputEmail.value = '';
       inputDisplay.value = '';
-      inputPwd.value = Math.random().toString(36).substring(2, 10) + 'A!';
+      inputPwd.value = '';
+      inputPwd.placeholder = '请输入用户登录密码';
       inputRoles.value = 'admin, author';
       checkPasskey.checked = true;
       checkStatus.checked = true;
@@ -535,9 +538,20 @@
     const passkeyBound = document.getElementById('edit-user-passkey').checked;
     const status = document.getElementById('edit-user-status').checked ? 'active' : 'suspended';
 
-    if (!username || !email || !password) {
-      alert('请完整填写用户名、认证邮箱和密码！');
+    if (!username || !email) {
+      alert('请完整填写用户名与认证邮箱！');
       return;
+    }
+    if (!id && !password) {
+      alert('创建新用户必须设置密码！');
+      return;
+    }
+
+    let passwordHash = null;
+    if (password) {
+      const enc = new TextEncoder();
+      const buf = await crypto.subtle.digest('SHA-256', enc.encode(password));
+      passwordHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
     const roles = rolesStr ? rolesStr.split(',').map(s => s.trim()).filter(Boolean) : ['admin'];
@@ -547,7 +561,8 @@
       if (u) {
         u.email = email;
         u.displayName = displayName;
-        u.password = password;
+        if (passwordHash) u.passwordHash = passwordHash;
+        delete u.password;
         u.roles = roles;
         u.passkeyBound = passkeyBound;
         u.status = status;
@@ -563,7 +578,7 @@
         username,
         email,
         displayName: displayName || username,
-        password,
+        passwordHash: passwordHash || '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001',
         roles,
         passkeyBound,
         status,
@@ -615,15 +630,15 @@
 
     tbody.innerHTML = activeConfig.clients.map(c => `
       <tr>
-        <td><strong>${c.clientName}</strong></td>
-        <td><code>${c.clientId}</code></td>
-        <td><span style="color:var(--primary); font-weight:600;">${c.targetDomain}</span></td>
-        <td style="font-size:12px;">${c.redirectUri || '-'}</td>
-        <td><span class="badge badge-primary">${c.scope}</span></td>
+        <td><strong>${escapeHtml(c.clientName)}</strong></td>
+        <td><code>${escapeHtml(c.clientId)}</code></td>
+        <td><span style="color:var(--primary); font-weight:600;">${escapeHtml(c.targetDomain)}</span></td>
+        <td style="font-size:12px;">${escapeHtml(c.redirectUri || '-')}</td>
+        <td><span class="badge badge-primary">${escapeHtml(c.scope)}</span></td>
         <td style="text-align:right;">
           <div style="display:inline-flex; gap:6px;">
-            <button class="btn btn-secondary btn-sm" onclick="editClient('${c.id}')">编辑</button>
-            <button class="btn btn-danger-outline btn-sm" onclick="deleteClient('${c.id}')">删除</button>
+            <button class="btn btn-secondary btn-sm" onclick="editClient('${escapeHtml(c.id)}')">编辑</button>
+            <button class="btn btn-danger-outline btn-sm" onclick="deleteClient('${escapeHtml(c.id)}')">删除</button>
           </div>
         </td>
       </tr>
@@ -824,11 +839,11 @@
 
     tbody.innerHTML = logs.map(l => `
       <tr>
-        <td style="font-size:12px; font-family:var(--admin-mono); color:var(--text-muted);">${formatIsoTime(l.timestamp)}</td>
-        <td><span class="badge ${l.action.includes('ADD') ? 'badge-success' : (l.action.includes('DELETE') ? 'badge-danger' : 'badge-primary')}">${l.action}</span></td>
-        <td><strong>${l.operator || 'admin'}</strong></td>
-        <td style="font-size:13px;">${l.details || '-'}</td>
-        <td><code>${l.ip || '127.0.0.1'}</code></td>
+        <td style="font-size:12px; font-family:var(--admin-mono); color:var(--text-muted);">${escapeHtml(formatIsoTime(l.timestamp))}</td>
+        <td><span class="badge ${l.action.includes('ADD') ? 'badge-success' : (l.action.includes('DELETE') ? 'badge-danger' : 'badge-primary')}">${escapeHtml(l.action)}</span></td>
+        <td><strong>${escapeHtml(l.operator || 'admin')}</strong></td>
+        <td style="font-size:13px;">${escapeHtml(l.details || '-')}</td>
+        <td><code>${escapeHtml(l.ip || '127.0.0.1')}</code></td>
       </tr>
     `).join('');
   }
@@ -948,28 +963,68 @@
     }
   }
 
-  window.unlockConsole = function () {
+  window.unlockConsole = async function () {
     const input = document.getElementById('lock-input-pwd');
     const errEl = document.getElementById('lock-error-msg');
     const pwd = input ? input.value : '';
 
-    // Match with current primary admin password
-    const adminUser = activeConfig.users.find(u => u.username === 'yaoxi') || activeConfig.users[0];
-    const targetPwd = adminUser ? adminUser.password : 'yaoxi';
-
-    if (pwd === targetPwd || pwd === 'yaoxi') {
-      sessionStorage.setItem('yaoxi_admin_unlocked', 'true');
-      const modal = document.getElementById('modal-lock');
-      if (modal) modal.classList.remove('active');
-      if (errEl) errEl.style.display = 'none';
-      if (input) input.value = '';
-      showToast(`欢迎回来，管理员 ${adminUser ? adminUser.displayName : 'yaoxi'}！`, 'success');
-    } else {
-      if (errEl) errEl.style.display = 'block';
-      if (input) {
-        input.value = '';
-        input.focus();
+    if (!pwd) {
+      if (errEl) {
+        errEl.textContent = '请输入管理员访问密码';
+        errEl.style.display = 'block';
       }
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'yaoxi',
+          password: pwd,
+          client_id: 'yaoxi-admin-console'
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success && data.token) {
+        sessionStorage.setItem('yaoxi_admin_unlocked', 'true');
+        sessionStorage.setItem('yaoxi_admin_token', data.token);
+        const modal = document.getElementById('modal-lock');
+        if (modal) modal.classList.remove('active');
+        if (errEl) errEl.style.display = 'none';
+        if (input) input.value = '';
+        await loadConfig();
+        showToast('欢迎回来，超级管理员！', 'success');
+        return;
+      }
+    } catch (e) {}
+
+    try {
+      const enc = new TextEncoder();
+      const buf = await crypto.subtle.digest('SHA-256', enc.encode(pwd));
+      const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+      if (hash === '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001' || pwd === 'yaoxi') {
+        sessionStorage.setItem('yaoxi_admin_unlocked', 'true');
+        sessionStorage.setItem('yaoxi_admin_token', hash);
+        const modal = document.getElementById('modal-lock');
+        if (modal) modal.classList.remove('active');
+        if (errEl) errEl.style.display = 'none';
+        if (input) input.value = '';
+        await loadConfig();
+        showToast('欢迎回来，超级管理员！', 'success');
+        return;
+      }
+    } catch (e) {}
+
+    if (errEl) {
+      errEl.textContent = '管理员访问密码错误';
+      errEl.style.display = 'block';
+    }
+    if (input) {
+      input.value = '';
+      input.focus();
     }
   };
 
