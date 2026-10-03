@@ -464,7 +464,93 @@ export default {
       }
     }
 
-    // 2. API 接口: /api/config (严格数据脱敏与管理员门禁鉴权)
+    // 2. API 接口: /api/status (轻量级账号实时状态查询与即时吊销检测)
+    if (pathname === '/api/status') {
+      const corsHeaders = {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With'
+      };
+
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
+
+      let querySub = '';
+      let queryEmail = '';
+      let queryId = '';
+
+      if (request.method === 'GET') {
+        querySub = url.searchParams.get('username') || url.searchParams.get('sub') || '';
+        queryEmail = url.searchParams.get('email') || '';
+        queryId = url.searchParams.get('id') || '';
+      } else if (request.method === 'POST') {
+        try {
+          const body = await request.json();
+          if (body && typeof body === 'object') {
+            querySub = body.username || body.sub || '';
+            queryEmail = body.email || '';
+            queryId = body.id || '';
+          }
+        } catch (e) {}
+      }
+
+      if (!querySub && !queryEmail && !queryId) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Missing query parameters (username, sub, email, or id required)'
+        }), { status: 400, headers: corsHeaders });
+      }
+
+      let config = null;
+      if (env && env.SSO_CONFIG_KV) {
+        try {
+          const data = await env.SSO_CONFIG_KV.get('sso_global_config');
+          if (data) config = JSON.parse(data);
+        } catch (e) {}
+      }
+      if (!config) config = DEFAULT_CONFIG;
+
+      const usersList = Array.isArray(config.users) ? config.users : [];
+      const subClean = querySub.trim().toLowerCase();
+      const emailClean = queryEmail.trim().toLowerCase();
+      const idClean = queryId.trim();
+
+      const matchedUser = usersList.find(u => {
+        if (idClean && u.id === idClean) return true;
+        const uName = (u.username || '').toLowerCase();
+        const uEmail = (u.email || '').toLowerCase();
+        if (subClean && (uName === subClean || uEmail === subClean)) return true;
+        if (emailClean && (uEmail === emailClean || uName === emailClean)) return true;
+        return false;
+      });
+
+      if (matchedUser) {
+        const isActive = (matchedUser.status === 'active');
+        return new Response(JSON.stringify({
+          success: true,
+          found: true,
+          userId: matchedUser.id,
+          username: matchedUser.username,
+          status: matchedUser.status || 'active',
+          active: isActive,
+          revoked: !isActive
+        }), { status: 200, headers: corsHeaders });
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        found: false,
+        active: false,
+        revoked: true,
+        error: 'User not found or revoked'
+      }), { status: 200, headers: corsHeaders });
+    }
+
+    // 3. API 接口: /api/config (严格数据脱敏与管理员门禁鉴权)
     if (pathname === '/api/config') {
       if (request.method === 'GET') {
         let config = null;

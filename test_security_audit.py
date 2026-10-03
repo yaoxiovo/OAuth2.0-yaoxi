@@ -100,6 +100,61 @@ def test_timing_attack_protection():
         assert "function constantTimeCompare" in code, f"{path} 缺少 constantTimeCompare 函数!"
     print("  ✅ 密码学时序攻击防御已生效")
 
+def test_account_revocation_and_client_guard():
+    print("\nTesting Account Revocation & Client Real-time Guard: 账号吊销即时退登与客户端门禁...")
+    status_js = os.path.join(ROOT_DIR, "functions", "api", "status.js")
+    worker_js = os.path.join(ROOT_DIR, "worker.js")
+    admin_js = os.path.join(ROOT_DIR, "admin.js")
+    sdk_js = os.path.join(ROOT_DIR, "sdk", "yaoxi-auth.js")
+    blog_html = os.path.join(ROOT_DIR, "client-blog.html")
+    login_js = os.path.join(ROOT_DIR, "accounts-login.js")
+
+    # 1. 验证轻量级状态端点 /api/status
+    assert os.path.exists(status_js), "functions/api/status.js 缺失!"
+    with open(status_js, "r", encoding="utf-8") as f:
+        status_code = f.read()
+    assert "resolveUserStatus" in status_code, "status.js 缺少 resolveUserStatus 函数!"
+    assert "no-store" in status_code, "status.js 缺少 no-store 禁缓存头!"
+
+    with open(worker_js, "r", encoding="utf-8") as f:
+        worker_code = f.read()
+    assert "pathname === '/api/status'" in worker_code, "worker.js 缺少 /api/status 路由!"
+
+    # 2. 验证控制台即时广播
+    with open(admin_js, "r", encoding="utf-8") as f:
+        admin_code = f.read()
+    assert "function broadcastRevocationEvent" in admin_code, "admin.js 缺少 broadcastRevocationEvent 函数!"
+    assert "new BroadcastChannel('yaoxi_sso_channel')" in admin_code, "admin.js 缺少 BroadcastChannel 广播!"
+    assert "yaoxi_sso_revocation_event" in admin_code, "admin.js 缺少 cross-window storage 吊销广播!"
+    assert "broadcastRevocationEvent(u, 'TOGGLE_STATUS'" in admin_code, "admin.js toggleUserStatus 未触发广播!"
+    assert "broadcastRevocationEvent(u, 'DELETE_USER'" in admin_code, "admin.js deleteUser 未触发广播!"
+
+    # 3. 验证客户端 SDK 强化
+    with open(sdk_js, "r", encoding="utf-8") as f:
+        sdk_code = f.read()
+    assert "_setupRevocationChannels" in sdk_code, "sdk/yaoxi-auth.js 缺少 _setupRevocationChannels!"
+    assert "new BroadcastChannel('yaoxi_sso_channel')" in sdk_code, "sdk/yaoxi-auth.js 缺少 BroadcastChannel 监听!"
+    assert "yaoxi_sso_revocation_event" in sdk_code, "sdk/yaoxi-auth.js 缺少 storage 事件监听!"
+    assert "assertActive" in sdk_code, "sdk/yaoxi-auth.js 缺少 assertActive 门禁方法!"
+    assert "intervalMs = 3000" in sdk_code, "sdk/yaoxi-auth.js 轮询周期未优化为 3000ms!"
+
+    # 4. 验证客户端演示端 client-blog.html
+    with open(blog_html, "r", encoding="utf-8") as f:
+        blog_code = f.read()
+    assert "handleForcedRevocation" in blog_code, "client-blog.html 缺少 handleForcedRevocation 函数!"
+    assert "new BroadcastChannel('yaoxi_sso_channel')" in blog_code, "client-blog.html 缺少 BroadcastChannel 监听!"
+    assert "yaoxi_sso_revocation_event" in blog_code, "client-blog.html 缺少 storage 事件监听!"
+    assert "validateAccountStatus(true)" in blog_code, "client-blog.html 评论操作缺少前置自省门禁拦截!"
+    assert "revocation-alert-banner" in blog_code, "client-blog.html 缺少即时吊销警示横幅容器!"
+    assert "token-badge-error" in blog_code, "client-blog.html 缺少 token-badge-error 状态样式!"
+
+    # 5. 验证登录认证界面防伪
+    with open(login_js, "r", encoding="utf-8") as f:
+        login_code = f.read()
+    assert "activeUserSession.status !== 'active'" in login_code, "accounts-login.js 未在签发时校验 status!"
+
+    print("  ✅ 账号吊销即时退登、双通道广播、高频心跳与客户端门禁断言全部通过！")
+
 if __name__ == "__main__":
     print("\n==================================================")
     print(" 🧪 运行安全审计全量回归单元测试套件")
@@ -110,6 +165,7 @@ if __name__ == "__main__":
     test_vulnerability_5_postmessage_wildcard()
     test_vulnerability_7_xss_protection()
     test_timing_attack_protection()
+    test_account_revocation_and_client_guard()
     print("\n==================================================")
-    print(" 💯 全部 8 处高危与致命级漏洞修复验证通过！代码安全门禁就绪！")
+    print(" 💯 全部安全漏洞与即时退登门禁机制验证通过！系统就绪！")
     print("==================================================\n")

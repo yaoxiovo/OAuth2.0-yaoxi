@@ -57,6 +57,18 @@
       font-weight: 700;
     }
 
+    .token-badge-error {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
     .token-raw-box {
       background: #0d1117;
       color: #7ee787;
@@ -166,6 +178,12 @@
   <!-- Main Content Wrapper -->
   <main class="b-main-wrapper" style="grid-template-columns: 1fr; max-width: 960px; min-height: auto; padding-top: 24px;">
     
+    <!-- Real-time Revocation Alert Banner -->
+    <div id="revocation-alert-banner" style="display:none; background: rgba(239, 68, 68, 0.12); border: 1px solid #ef4444; color: #ef4444; padding: 14px 18px; border-radius: 10px; margin-bottom: 20px; font-weight: 600; align-items: center; gap: 12px; box-shadow: 0 4px 12px rgba(239, 68, 68, 0.15);">
+      <span style="font-size: 20px;">⚠️</span>
+      <span id="revocation-alert-text">您的账号已被管理员冻结/吊销，登录态已即时失效，所有受保护操作已被切断！</span>
+    </div>
+
     <!-- Real-time Cross-Origin Signature Handshake Inspector -->
     <div class="token-inspector-card" id="token-inspector">
       <div class="token-status-header">
@@ -328,30 +346,205 @@ window.addEventListener('message', (event) => {
         }
       }
 
-      async function validateAccountStatus() {
+      function handleForcedRevocation(reason) {
+        localStorage.removeItem('yaoxi_client_token');
+        localStorage.removeItem('yaoxi_client_user');
+
+        // 1. 顶部导航栏 UI 立即复原为未登录态
+        const btnSso = document.getElementById('btn-goto-sso');
+        const userProf = document.getElementById('nav-user-profile');
+        if (btnSso) btnSso.style.display = 'inline-flex';
+        if (userProf) userProf.style.display = 'none';
+
+        // 2. 深度文章内容门禁立即切回锁定遮罩
+        const unText = document.getElementById('unlocked-text');
+        const gateOverlay = document.getElementById('article-gate-overlay');
+        if (unText) unText.style.display = 'none';
+        if (gateOverlay) gateOverlay.style.display = 'block';
+
+        // 3. 评论交互区立即切断并阻断
+        const commentInput = document.getElementById('client-comment-text');
+        const commentBtn = document.getElementById('btn-post-comment');
+        const commentUser = document.getElementById('client-comment-user');
+        if (commentInput) {
+          commentInput.value = '';
+          commentInput.disabled = true;
+          commentInput.placeholder = '⚠️ 您的账号已被管理中心冻结或注销，所有受保护权限已切断！';
+        }
+        if (commentBtn) {
+          commentBtn.disabled = true;
+          commentBtn.style.opacity = '0.5';
+          commentBtn.style.cursor = 'not-allowed';
+        }
+        if (commentUser) {
+          commentUser.innerHTML = '<span style="color:#ef4444; font-weight:700;">⚠️ 账号已被管理员冻结/吊销，操作已被阻断！</span>';
+        }
+
+        // 4. Token Inspector 状态更新为红色吊销
+        const inspector = document.getElementById('token-inspector');
+        if (inspector) {
+          inspector.style.display = 'block';
+          const badge = document.getElementById('token-status-badge');
+          if (badge) {
+            badge.className = 'token-badge-error';
+            badge.innerHTML = '<span>✕</span> 账号已被管理员吊销/冻结：登录态已即时失效';
+          }
+          const desc = document.getElementById('token-status-desc');
+          if (desc) desc.textContent = '检测到 accounts.yaoxi.cloud 统一身份认证中心下发吊销指令，已切断所有 API 访问通道与登录凭证：';
+          const raw = document.getElementById('token-raw-text');
+          if (raw) raw.textContent = `[SESSION_REVOKED] Token revoked by admin at ${new Date().toLocaleTimeString()}\nAll client privileges revoked. Access denied.`;
+        }
+
+        // 5. 显示醒目红色警示横幅
+        const alertBanner = document.getElementById('revocation-alert-banner');
+        if (alertBanner) {
+          alertBanner.style.display = 'flex';
+          const txt = document.getElementById('revocation-alert-text');
+          if (txt) txt.textContent = reason || '您的账号已被管理员冻结/吊销，登录态已即时失效，所有受保护操作已被切断！';
+        }
+
+        console.warn('[Client Blog] Immediate Revocation Enforced:', reason);
+      }
+
+      async function validateAccountStatus(isForced = false) {
         const savedUserStr = localStorage.getItem('yaoxi_client_user');
-        if (!savedUserStr) return;
+        const token = localStorage.getItem('yaoxi_client_token');
+        if (!savedUserStr || !token) return true;
+
         try {
           const user = JSON.parse(savedUserStr);
-          const res = await fetch(`${SSO_BASE_URL.replace(/accounts-login\.html.*/, '')}api/config?t=${Date.now()}`, { cache: 'no-store' });
-          if (res.ok) {
-            const cfg = await res.json();
-            if (cfg && Array.isArray(cfg.users)) {
-              const sub = (user.sub || '').toLowerCase();
-              const email = (user.email || '').toLowerCase();
-              const matched = cfg.users.find(u => (u.username || '').toLowerCase() === sub || (u.email || '').toLowerCase() === email);
-              if (matched && matched.status !== 'active') {
-                logoutClient();
-                alert('⚠️ 您的账号已在统一身份认证管理中心被冻结，登录态已立即失效！');
+          const sub = (user.sub || user.username || '').toLowerCase();
+          const email = (user.email || '').toLowerCase();
+
+          // A. 本地 LocalStorage 极速自省 (同源多标签页 0 延迟秒级读取)
+          try {
+            const localCfgStr = localStorage.getItem('yaoxi_sso_config');
+            if (localCfgStr) {
+              const localCfg = JSON.parse(localCfgStr);
+              if (Array.isArray(localCfg.users)) {
+                const matched = localCfg.users.find(u => {
+                  const uName = (u.username || '').toLowerCase();
+                  const uEmail = (u.email || '').toLowerCase();
+                  return (sub && (uName === sub || uEmail === sub)) || (email && (uEmail === email || uName === email));
+                });
+                if (!matched || matched.status !== 'active') {
+                  handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或注销，登录态已即时失效！');
+                  return false;
+                }
               }
             }
-          }
+          } catch (e) {}
+
+          // B. 服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存)
+          try {
+            const apiBase = SSO_BASE_URL.replace(/accounts-login\.html.*/, '');
+            const statusUrl = `${apiBase}api/status?username=${encodeURIComponent(sub)}&email=${encodeURIComponent(email)}&t=${Date.now()}`;
+            const res = await fetch(statusUrl, { cache: 'no-store' });
+            if (res.ok) {
+              const data = await res.json();
+              if (data && (data.revoked || !data.active || data.status === 'suspended')) {
+                handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或吊销，登录态已即时失效！');
+                return false;
+              }
+              return true;
+            }
+          } catch (e) {}
+
+          // C. 服务端配置 /api/config 兜底自省端点
+          try {
+            const apiBase = SSO_BASE_URL.replace(/accounts-login\.html.*/, '');
+            const res = await fetch(`${apiBase}api/config?t=${Date.now()}`, { cache: 'no-store' });
+            if (res.ok) {
+              const cfg = await res.json();
+              if (cfg && Array.isArray(cfg.users)) {
+                const matched = cfg.users.find(u => {
+                  const uName = (u.username || '').toLowerCase();
+                  const uEmail = (u.email || '').toLowerCase();
+                  return (sub && (uName === sub || uEmail === sub)) || (email && (uEmail === email || uName === email));
+                });
+                if (!matched || matched.status !== 'active') {
+                  handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结，登录态已即时失效！');
+                  return false;
+                }
+              }
+            }
+          } catch (e) {}
+
+          return true;
+        } catch (err) {
+          console.warn('[Client Blog] validateAccountStatus error:', err);
+          return true;
+        }
+      }
+
+      // 4. 实时广播监听器 (BroadcastChannel 与 Storage Event 双重保障 0 延迟响应)
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const ssoChannel = new BroadcastChannel('yaoxi_sso_channel');
+          ssoChannel.onmessage = function (event) {
+            const data = event.data;
+            if (!data || data.type !== 'YAOXI_ACCOUNT_REVOCATION_EVENT') return;
+            const savedUserStr = localStorage.getItem('yaoxi_client_user');
+            if (!savedUserStr) return;
+            try {
+              const curUser = JSON.parse(savedUserStr);
+              const curSub = (curUser.sub || curUser.username || '').toLowerCase();
+              const curEmail = (curUser.email || '').toLowerCase();
+              const curId = curUser.id || '';
+              const targetSub = (data.username || '').toLowerCase();
+              const targetEmail = (data.email || '').toLowerCase();
+              const targetId = data.userId || '';
+              const isMatch = (data.userId === '*' || targetId === curId || (targetSub && targetSub === curSub) || (targetEmail && targetEmail === curEmail));
+
+              if (isMatch && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
+                handleForcedRevocation(`⚠️ 控制台已实时${data.action === 'DELETE_USER' ? '注销' : '冻结'}您的账号 [${curUser.sub || curUser.username}]，客户端已即时退登！`);
+              }
+            } catch (e) {}
+          };
         } catch (e) {}
       }
 
-      // Re-validate user status whenever returning to this tab
+      window.addEventListener('storage', function (e) {
+        if (e.key === 'yaoxi_sso_revocation_event' && e.newValue) {
+          try {
+            const data = JSON.parse(e.newValue);
+            const savedUserStr = localStorage.getItem('yaoxi_client_user');
+            if (!savedUserStr) return;
+            const curUser = JSON.parse(savedUserStr);
+            const curSub = (curUser.sub || curUser.username || '').toLowerCase();
+            const curEmail = (curUser.email || '').toLowerCase();
+            const curId = curUser.id || '';
+            const targetSub = (data.username || '').toLowerCase();
+            const targetEmail = (data.email || '').toLowerCase();
+            const targetId = data.userId || '';
+            const isMatch = (data.userId === '*' || targetId === curId || (targetSub && targetSub === curSub) || (targetEmail && targetEmail === curEmail));
+
+            if (isMatch && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
+              handleForcedRevocation(`⚠️ 控制台已实时${data.action === 'DELETE_USER' ? '注销' : '冻结'}您的账号 [${curUser.sub || curUser.username}]，客户端已即时退登！`);
+            }
+          } catch (err) {}
+        } else if (e.key === 'yaoxi_sso_config') {
+          if (localStorage.getItem('yaoxi_client_token')) {
+            validateAccountStatus();
+          }
+        }
+      });
+
+      // 5. 3秒主动高频心跳轮询与多事件唤醒自省
+      setInterval(() => {
+        if (localStorage.getItem('yaoxi_client_token')) {
+          validateAccountStatus();
+        }
+      }, 3000);
+
       window.addEventListener('focus', () => {
         if (localStorage.getItem('yaoxi_client_token')) {
+          validateAccountStatus();
+        }
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && localStorage.getItem('yaoxi_client_token')) {
           validateAccountStatus();
         }
       });
@@ -436,6 +629,23 @@ window.addEventListener('message', (event) => {
         // Unlock Gated Article
         document.getElementById('article-gate-overlay').style.display = 'none';
         document.getElementById('unlocked-text').style.display = 'block';
+
+        // Reset Alert Banner
+        const alertBanner = document.getElementById('revocation-alert-banner');
+        if (alertBanner) alertBanner.style.display = 'none';
+
+        // Restore Comment Box
+        const commentInput = document.getElementById('client-comment-text');
+        const commentBtn = document.getElementById('btn-post-comment');
+        if (commentInput) {
+          commentInput.disabled = false;
+          commentInput.placeholder = '发表技术随笔与评论...';
+        }
+        if (commentBtn) {
+          commentBtn.disabled = false;
+          commentBtn.style.opacity = '1';
+          commentBtn.style.cursor = 'pointer';
+        }
 
         // Update Comment Box User
         document.getElementById('client-comment-user').innerHTML = `
@@ -525,19 +735,39 @@ window.addEventListener('message', (event) => {
       document.getElementById('btn-redirect-article').addEventListener('click', () => initiateSSO(false));
       document.getElementById('btn-client-logout').addEventListener('click', logoutClient);
 
-      document.getElementById('btn-post-comment').addEventListener('click', () => {
-        const val = document.getElementById('client-comment-text').value.trim();
-        if (!val) {
-          alert('请输入评论内容');
-          return;
-        }
+      document.getElementById('btn-post-comment').addEventListener('click', async () => {
         if (!localStorage.getItem('yaoxi_client_token')) {
           alert('请先通过 accounts.yaoxi.cloud 验证通行密钥');
           initiateSSO(true);
           return;
         }
-        document.getElementById('client-comment-text').value = '';
-        alert('🚀 评论发表成功！');
+
+        const val = document.getElementById('client-comment-text').value.trim();
+        if (!val) {
+          alert('请输入评论内容');
+          return;
+        }
+
+        // 核心加固：操作前置强制状态核验门禁 (Pre-Action Guard)
+        const btn = document.getElementById('btn-post-comment');
+        btn.disabled = true;
+        btn.textContent = '正在核验账号授权状态...';
+
+        try {
+          const isAllowed = await validateAccountStatus(true);
+          if (!isAllowed) {
+            alert('❌ 操作已被拦截：您的账号已被管理员冻结/吊销，无法发表评论！');
+            return;
+          }
+
+          document.getElementById('client-comment-text').value = '';
+          alert('🚀 评论发表成功！');
+        } finally {
+          if (localStorage.getItem('yaoxi_client_token')) {
+            btn.disabled = false;
+            btn.textContent = '发表评论';
+          }
+        }
       });
 
       // Dark Mode toggle

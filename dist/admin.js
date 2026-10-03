@@ -126,6 +126,45 @@
     }
   }
 
+  function broadcastRevocationEvent(user, action, status) {
+    if (!user) return;
+    const payload = {
+      type: 'YAOXI_ACCOUNT_REVOCATION_EVENT',
+      action: action || 'STATUS_UPDATE',
+      userId: user.id || '',
+      username: (user.username || '').toLowerCase(),
+      email: (user.email || '').toLowerCase(),
+      status: status || 'suspended',
+      timestamp: Date.now()
+    };
+
+    // 1. BroadcastChannel (0延迟同源多标签/多窗口/SPA客户端即时通信)
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const channel = new BroadcastChannel('yaoxi_sso_channel');
+        channel.postMessage(payload);
+        channel.close();
+      } catch (e) {
+        console.warn('[Admin Console] BroadcastChannel dispatch failed:', e);
+      }
+    }
+
+    // 2. Storage Event (跨标签页原生 storage 监听兜底)
+    try {
+      localStorage.setItem('yaoxi_sso_revocation_event', JSON.stringify({
+        ...payload,
+        _nonce: Math.random().toString(36).substring(2)
+      }));
+    } catch (e) {
+      console.warn('[Admin Console] LocalStorage event dispatch failed:', e);
+    }
+
+    // 3. CustomEvent (同页面内原生事件分发)
+    try {
+      window.dispatchEvent(new CustomEvent('yaoxi_account_revocation', { detail: payload }));
+    } catch (e) {}
+  }
+
   function persistLocalConfig() {
     activeConfig.lastUpdated = new Date().toISOString();
     localStorage.setItem('yaoxi_sso_config', JSON.stringify(activeConfig));
@@ -467,13 +506,14 @@
       u.status = checked ? 'active' : 'suspended';
       recordAuditLog('USER_STATUS_TOGGLE', `${checked ? '解冻' : '冻结'} 用户: ${u.username} (${u.email})`);
       persistLocalConfig();
+      broadcastRevocationEvent(u, 'TOGGLE_STATUS', u.status);
       renderUsersTable();
       renderOverview();
       const res = await pushRemoteConfig();
       if (res && res.savedToKv) {
         showToast(`已${checked ? '解冻' : '冻结'}账号 "${u.username}"，全球全设备即时生效！`, checked ? 'success' : 'warning');
       } else {
-        showToast(`已${checked ? '解冻' : '冻结'}账号 "${u.username}"`, 'primary');
+        showToast(`已${checked ? '解冻' : '冻结'}账号 "${u.username}"，已向所有客户端广播状态变更！`, 'primary');
       }
     }
   };
@@ -559,6 +599,7 @@
     if (id) {
       const u = activeConfig.users.find(x => x.id === id);
       if (u) {
+        const oldStatus = u.status;
         u.email = email;
         u.displayName = displayName;
         if (passwordHash) u.passwordHash = passwordHash;
@@ -567,6 +608,9 @@
         u.passkeyBound = passkeyBound;
         u.status = status;
         recordAuditLog('USER_UPDATE', `更新账号凭证: ${username} (${email})`);
+        if (oldStatus !== status || status !== 'active') {
+          broadcastRevocationEvent(u, 'UPDATE_USER', status);
+        }
       }
     } else {
       if (activeConfig.users.some(x => x.username === username)) {
@@ -615,6 +659,7 @@
     activeConfig.users = activeConfig.users.filter(x => x.id !== id);
     recordAuditLog('USER_DELETE', `删除账号: ${u.username}`);
     persistLocalConfig();
+    broadcastRevocationEvent(u, 'DELETE_USER', 'suspended');
     renderUsersTable();
     renderOverview();
     await pushRemoteConfig();
@@ -940,6 +985,7 @@
     activeConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     recordAuditLog('FACTORY_RESET', '系统被恢复为出厂默认设置');
     persistLocalConfig();
+    broadcastRevocationEvent({ id: '*', username: '*', email: '*' }, 'FACTORY_RESET', 'suspended');
     pushRemoteConfig();
     clearChanged();
     refreshAllViews();

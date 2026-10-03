@@ -817,6 +817,11 @@
 
   async function generateAndEmitSignature(authMeta = null, serverBundle = null) {
     const DOM = getDOM();
+    if (activeUserSession && activeUserSession.status && activeUserSession.status !== 'active') {
+      showError(DOM.passwordError || DOM.usernameError, '此 Google 帐号已被管理员停用或冻结。详情请咨询系统管理员。');
+      return;
+    }
+
     const now = Math.floor(Date.now() / 1000);
     const cfg = getDynamicConfig();
     const expiresIn = (serverBundle && serverBundle.expires_in) || ((cfg && cfg.security && cfg.security.tokenTtl) ? cfg.security.tokenTtl : 7200);

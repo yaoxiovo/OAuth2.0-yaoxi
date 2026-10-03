@@ -45,8 +45,84 @@
       this.storagePrefix = 'yaoxi_auth_';
 
       this._authListeners = [];
+      this._revocationListeners = [];
       this._messageListener = null;
       this._popupWindow = null;
+      this._ssoChannel = null;
+
+      this._setupRevocationChannels();
+    }
+
+    /**
+     * 挂载多通道账号吊销即时监听器 (BroadcastChannel + Storage Event)
+     */
+    _setupRevocationChannels() {
+      // 1. BroadcastChannel (0延迟同源跨标签页/窗口双向即时同步)
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          this._ssoChannel = new BroadcastChannel('yaoxi_sso_channel');
+          this._ssoChannel.onmessage = (event) => {
+            this._handleRevocationEvent(event.data);
+          };
+        } catch (e) {
+          console.warn('[YaoxiAuth SDK] BroadcastChannel init warning:', e);
+        }
+      }
+
+      // 2. Storage Event (跨窗口原生存储事件兜底)
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('storage', (event) => {
+          if (event.key === 'yaoxi_sso_revocation_event' && event.newValue) {
+            try {
+              const data = JSON.parse(event.newValue);
+              this._handleRevocationEvent(data);
+            } catch (e) {}
+          } else if (event.key === 'yaoxi_sso_config') {
+            this.validateStatus();
+          }
+        });
+      }
+    }
+
+    /**
+     * 处理广播的账号状态变更/吊销事件
+     */
+    _handleRevocationEvent(data) {
+      if (!data || data.type !== 'YAOXI_ACCOUNT_REVOCATION_EVENT') return;
+      const user = this.getUser();
+      if (!user) return;
+
+      const curSub = (user.sub || user.username || '').toLowerCase();
+      const curEmail = (user.email || '').toLowerCase();
+      const curId = user.id || '';
+
+      const targetSub = (data.username || '').toLowerCase();
+      const targetEmail = (data.email || '').toLowerCase();
+      const targetId = data.userId || '';
+
+      const isMatch = (data.userId === '*' || targetId === curId || (targetSub && targetSub === curSub) || (targetEmail && targetEmail === curEmail));
+
+      if (isMatch && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
+        console.warn('[YaoxiAuth SDK] Active user session revoked by admin:', data);
+        this.logout();
+        for (const cb of this._revocationListeners) {
+          try {
+            cb(data);
+          } catch (e) {
+            console.error('[YaoxiAuth SDK] Revocation listener error:', e);
+          }
+        }
+      }
+    }
+
+    /**
+     * 注册账号被吊销/冻结时的监听回调
+     * @param {function(event: Object): void} callback
+     */
+    onRevoked(callback) {
+      if (typeof callback === 'function') {
+        this._revocationListeners.push(callback);
+      }
     }
 
     /**
@@ -232,21 +308,88 @@
     async validateStatus() {
       const user = this.getUser();
       if (!user) return false;
+
+      const curSub = (user.sub || user.username || '').toLowerCase();
+      const curEmail = (user.email || '').toLowerCase();
+
+      // 1. 本地 LocalStorage 配置优先自省 (同源或本地调试极速判定)
       try {
-        const res = await fetch(`${this.authUrl}/api/config?t=${Date.now()}`, { cache: 'no-store' });
-        if (res.ok) {
-          const cfg = await res.json();
-          if (cfg && Array.isArray(cfg.users)) {
-            const sub = (user.sub || '').toLowerCase();
-            const email = (user.email || '').toLowerCase();
-            const matched = cfg.users.find(u => (u.username || '').toLowerCase() === sub || (u.email || '').toLowerCase() === email);
-            if (matched && matched.status !== 'active') {
+        const localCfgStr = localStorage.getItem('yaoxi_sso_config');
+        if (localCfgStr) {
+          const localCfg = JSON.parse(localCfgStr);
+          if (Array.isArray(localCfg.users)) {
+            const matched = localCfg.users.find(u => {
+              const uName = (u.username || '').toLowerCase();
+              const uEmail = (u.email || '').toLowerCase();
+              return (curSub && (uName === curSub || uEmail === curSub)) || (curEmail && (uEmail === curEmail || uName === curEmail));
+            });
+            if (!matched || matched.status !== 'active') {
               this.logout();
+              this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_LOCAL', username: curSub });
               return false;
             }
           }
         }
       } catch (e) {}
+
+      // 2. 服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存)
+      try {
+        const base = this.authUrl.replace(/\/$/, '');
+        const statusUrl = `${base}/api/status?username=${encodeURIComponent(curSub)}&email=${encodeURIComponent(curEmail)}&t=${Date.now()}`;
+        const res = await fetch(statusUrl, { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && (data.revoked || !data.active || data.status === 'suspended')) {
+            this.logout();
+            this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_REMOTE', username: curSub });
+            return false;
+          }
+          return true;
+        }
+      } catch (e) {}
+
+      // 3. 服务端配置 /api/config 兜底自省端点
+      try {
+        const cfgRes = await fetch(`${this.authUrl.replace(/\/$/, '')}/api/config?t=${Date.now()}`, { cache: 'no-store' });
+        if (cfgRes.ok) {
+          const cfg = await cfgRes.json();
+          if (cfg && Array.isArray(cfg.users)) {
+            const matched = cfg.users.find(u => (u.username || '').toLowerCase() === curSub || (u.email || '').toLowerCase() === curEmail);
+            if (!matched || matched.status !== 'active') {
+              this.logout();
+              this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_CONFIG', username: curSub });
+              return false;
+            }
+          }
+        }
+      } catch (e) {}
+
+      return true;
+    }
+
+    _triggerRevocation(data) {
+      for (const cb of this._revocationListeners) {
+        try {
+          cb(data);
+        } catch (e) {
+          console.error('[YaoxiAuth SDK] Revocation listener error:', e);
+        }
+      }
+    }
+
+    /**
+     * 前置操作拦截门禁 (Pre-Action Guard)
+     * 在敏感操作 (发表评论、调取受保护接口) 前强制执行
+     * @returns {Promise<boolean>} 若通过返回 true，若未登录或已冻结则抛出异常并阻断执行
+     */
+    async assertActive() {
+      if (!this.isAuthenticated()) {
+        throw new Error('UNAUTHENTICATED: 用户未登录或凭据已失效');
+      }
+      const valid = await this.validateStatus();
+      if (!valid) {
+        throw new Error('ACCOUNT_REVOKED: 账号已被统一身份认证中心冻结或注销');
+      }
       return true;
     }
 
@@ -296,12 +439,16 @@
     }
 
     /**
-     * 自动监控账号实时状态 (窗口激活或定时轮询)
+     * 自动监控账号实时状态 (窗口激活、可见性切换或定时轮询)
      * @param {function(user: Object): void} [onFrozenCallback] - 账号被冻结时的回调
-     * @param {number} [intervalMs=60000] - 轮询间隔毫秒数
+     * @param {number} [intervalMs=3000] - 轮询间隔毫秒数 (默认 3 秒高频检测)
      * @returns {function(): void} 取消监控的注销函数
      */
-    watchAccountStatus(onFrozenCallback, intervalMs = 60000) {
+    watchAccountStatus(onFrozenCallback, intervalMs = 3000) {
+      if (typeof onFrozenCallback === 'function') {
+        this.onRevoked(onFrozenCallback);
+      }
+
       const check = async () => {
         if (this.isAuthenticated()) {
           const valid = await this.validateStatus();
@@ -312,11 +459,15 @@
       };
 
       const focusHandler = () => check();
+      const visHandler = () => { if (document.visibilityState === 'visible') check(); };
+
       window.addEventListener('focus', focusHandler);
+      document.addEventListener('visibilitychange', visHandler);
       const timer = setInterval(check, intervalMs);
 
       return () => {
         window.removeEventListener('focus', focusHandler);
+        document.removeEventListener('visibilitychange', visHandler);
         clearInterval(timer);
       };
     }
