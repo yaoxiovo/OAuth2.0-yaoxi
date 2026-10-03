@@ -309,19 +309,137 @@ window.addEventListener('message', (event) => {
       const SSO_BASE_URL = 'accounts-login.html'; // In production: https://accounts.yaoxi.cloud
       let pendingRequestToken = null;
 
-      // 1. Listen for Real-time Cross-Origin postMessage Events from accounts.yaoxi.cloud
+      // 0. 解析权威 SSO 认证中心 Origin 基址 (精准定位后端 API，杜绝相对路径 404 误放行)
+      function getSSOAuthorityBase() {
+        try {
+          const userStr = localStorage.getItem('yaoxi_client_user');
+          if (userStr) {
+            const u = JSON.parse(userStr);
+            if (u && typeof u.iss === 'string' && u.iss.startsWith('http')) {
+              return u.iss.replace(/\/+$/, '');
+            }
+          }
+        } catch (e) {}
+
+        if (typeof SSO_BASE_URL === 'string') {
+          if (SSO_BASE_URL.startsWith('http://') || SSO_BASE_URL.startsWith('https://')) {
+            try {
+              return new URL(SSO_BASE_URL).origin;
+            } catch (e) {}
+          }
+        }
+
+        if (window.location.hostname.endsWith('yaoxi.wiki') || window.location.hostname.endsWith('yaoxi.cloud')) {
+          return 'https://accounts.yaoxi.cloud';
+        }
+
+        return window.location.origin;
+      }
+
+      // 0.1 本地持久化黑名单极速自省 (0 延迟毫秒级拦截)
+      function checkLocalRevocationBlacklist(sub, email, id) {
+        try {
+          const listStr = localStorage.getItem('yaoxi_sso_revoked_users');
+          if (!listStr) return false;
+          const list = JSON.parse(listStr);
+          if (!Array.isArray(list)) return false;
+
+          const s = (sub || '').toLowerCase();
+          const em = (email || '').toLowerCase();
+          const uid = id || '';
+
+          return list.some(item => {
+            if (item.id === '*' || item.username === '*' || item.email === '*') return true;
+            if (uid && item.id === uid) return true;
+            if (s && (item.username === s || item.email === s)) return true;
+            if (em && (item.email === em || item.username === em)) return true;
+            return false;
+          });
+        } catch (e) {
+          return false;
+        }
+      }
+
+      // 0.2 匹配吊销事件目标用户
+      function isUserTargeted(data, user) {
+        if (!data || !user) return false;
+        const curSub = (user.sub || user.username || '').toLowerCase();
+        const curEmail = (user.email || '').toLowerCase();
+        const curId = user.id || '';
+
+        const targetSub = (data.username || '').toLowerCase();
+        const targetEmail = (data.email || '').toLowerCase();
+        const targetId = data.userId || '';
+
+        return (data.userId === '*' || targetId === curId || (targetSub && (targetSub === curSub || targetSub === curEmail)) || (targetEmail && (targetEmail === curEmail || targetEmail === curSub)));
+      }
+
+      // 1. 跨域与同源消息监听 (postMessage 签名握手与 Front-Channel 实时退登)
       window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'YAOXI_SSO_SIGNATURE_CALLBACK') {
+        if (!event.data || typeof event.data !== 'object') return;
+
+        // 1.1 登录中心回传数字签名回调
+        if (event.data.type === 'YAOXI_SSO_SIGNATURE_CALLBACK') {
           console.log('Real-time signature callback received from accounts.yaoxi.cloud:', event.data);
-          const { client_request_token, signed_token, signature, tokenBundle } = event.data;
-          
+          const { client_request_token, signed_token, signature } = event.data;
           if (signed_token) {
             processAndVerifySignature(signed_token, client_request_token, signature);
           }
         }
+
+        // 1.2 OIDC Front-Channel 跨域中继即时吊销广播
+        if (event.data.type === 'YAOXI_FRONTCHANNEL_REVOCATION') {
+          const data = event.data.payload || event.data;
+          const savedUserStr = localStorage.getItem('yaoxi_client_user');
+          if (savedUserStr) {
+            try {
+              const curUser = JSON.parse(savedUserStr);
+              if (isUserTargeted(data, curUser)) {
+                handleForcedRevocation(`⚠️ 控制台已实时${data.action === 'DELETE_USER' ? '注销' : '冻结'}您的账号 [${curUser.sub || curUser.username}]，跨域前置信道已即时切断登录态！`);
+              }
+            } catch (e) {}
+          }
+        }
+
+        // 1.3 OIDC Front-Channel 中继黑名单初始握手 / 实时同步
+        if (event.data.type === 'YAOXI_FRONTCHANNEL_READY' || event.data.type === 'YAOXI_FRONTCHANNEL_BLACKLIST_UPDATE') {
+          const list = (event.data.payload && event.data.payload.revokedUsers) || event.data.revokedUsers || event.data.payload;
+          if (Array.isArray(list)) {
+            try {
+              localStorage.setItem('yaoxi_sso_revoked_users', JSON.stringify(list));
+              const savedUserStr = localStorage.getItem('yaoxi_client_user');
+              if (savedUserStr) {
+                const curUser = JSON.parse(savedUserStr);
+                if (checkLocalRevocationBlacklist(curUser.sub || curUser.username, curUser.email, curUser.id)) {
+                  handleForcedRevocation('⚠️ 统一身份认证中心实时同步：您的账号已被管理员冻结/吊销！');
+                }
+              }
+            } catch (e) {}
+          }
+        }
       });
 
-      // 2. Check for URL Hash Token Callback (#client_request_token=...&access_token=...&signature=...)
+      // 1.4 挂载隐藏 OIDC Front-Channel 静默同步中继 iframe
+      function mountFrontChannelSync() {
+        if (typeof document === 'undefined' || !document.body) return;
+        if (document.getElementById('yaoxi-sso-sync-frame')) return;
+
+        const authBase = getSSOAuthorityBase();
+        const frame = document.createElement('iframe');
+        frame.id = 'yaoxi-sso-sync-frame';
+        const syncUrl = (authBase && authBase.startsWith('http'))
+          ? `${authBase}/channel-sync.html`
+          : 'channel-sync.html';
+        frame.src = syncUrl;
+        frame.style.display = 'none';
+        frame.style.position = 'absolute';
+        frame.style.width = '0';
+        frame.style.height = '0';
+        frame.style.border = 'none';
+        document.body.appendChild(frame);
+      }
+
+      // 2. 检查 OAuth 回调或本地 Token (执行严格前置安全核验)
       function handleOAuthCallback() {
         if (window.location.hash) {
           const hash = window.location.hash.substring(1);
@@ -332,7 +450,6 @@ window.addEventListener('message', (event) => {
 
           if (accessToken) {
             processAndVerifySignature(accessToken, requestToken, sig);
-            // Clean hash
             history.replaceState(null, null, window.location.pathname);
             return;
           }
@@ -340,9 +457,52 @@ window.addEventListener('message', (event) => {
 
         // Check local storage
         const savedToken = localStorage.getItem('yaoxi_client_token');
+        const savedUserStr = localStorage.getItem('yaoxi_client_user');
         if (savedToken) {
+          let userClaims = null;
+          try {
+            if (savedUserStr) userClaims = JSON.parse(savedUserStr);
+            if (!userClaims) {
+              const parts = savedToken.split('.');
+              if (parts.length >= 2) {
+                const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+                userClaims = JSON.parse(decodeURIComponent(escape(atob(payloadBase64))));
+              }
+            }
+          } catch (e) {}
+
+          // 核心加固：页面载入时若已在黑名单或被冻结，严禁先渲染登录态！
+          if (userClaims) {
+            const sub = (userClaims.sub || userClaims.username || '').toLowerCase();
+            const email = (userClaims.email || '').toLowerCase();
+            const id = userClaims.id || '';
+
+            if (checkLocalRevocationBlacklist(sub, email, id)) {
+              handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或吊销，登录态已即时失效！');
+              return;
+            }
+
+            try {
+              const localCfgStr = localStorage.getItem('yaoxi_sso_config');
+              if (localCfgStr) {
+                const localCfg = JSON.parse(localCfgStr);
+                if (Array.isArray(localCfg.users)) {
+                  const matched = localCfg.users.find(u => {
+                    const uName = (u.username || '').toLowerCase();
+                    const uEmail = (u.email || '').toLowerCase();
+                    return (sub && (uName === sub || uEmail === sub)) || (email && (uEmail === email || uName === email));
+                  });
+                  if (matched && matched.status !== 'active') {
+                    handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或吊销，登录态已即时失效！');
+                    return;
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+
           processAndVerifySignature(savedToken, null, null);
-          validateAccountStatus();
+          validateAccountStatus(true);
         }
       }
 
@@ -415,8 +575,15 @@ window.addEventListener('message', (event) => {
           const user = JSON.parse(savedUserStr);
           const sub = (user.sub || user.username || '').toLowerCase();
           const email = (user.email || '').toLowerCase();
+          const id = user.id || '';
 
-          // A. 本地 LocalStorage 极速自省 (同源多标签页 0 延迟秒级读取)
+          // A. 本地独立黑名单纳秒级自省
+          if (checkLocalRevocationBlacklist(sub, email, id)) {
+            handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或吊销，登录态已即时失效！');
+            return false;
+          }
+
+          // B. 本地 LocalStorage 配置优先自省 (同源多标签页 0 延迟读取)
           try {
             const localCfgStr = localStorage.getItem('yaoxi_sso_config');
             if (localCfgStr) {
@@ -435,10 +602,10 @@ window.addEventListener('message', (event) => {
             }
           } catch (e) {}
 
-          // B. 服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存)
+          // C. 权威服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存、CORS跨域支持)
+          const authAuthority = getSSOAuthorityBase();
           try {
-            const apiBase = SSO_BASE_URL.replace(/accounts-login\.html.*/, '');
-            const statusUrl = `${apiBase}api/status?username=${encodeURIComponent(sub)}&email=${encodeURIComponent(email)}&t=${Date.now()}`;
+            const statusUrl = `${authAuthority}/api/status?username=${encodeURIComponent(sub)}&email=${encodeURIComponent(email)}&id=${encodeURIComponent(id)}&t=${Date.now()}`;
             const res = await fetch(statusUrl, { cache: 'no-store' });
             if (res.ok) {
               const data = await res.json();
@@ -450,10 +617,9 @@ window.addEventListener('message', (event) => {
             }
           } catch (e) {}
 
-          // C. 服务端配置 /api/config 兜底自省端点
+          // D. 权威服务端配置 /api/config 兜底自省端点
           try {
-            const apiBase = SSO_BASE_URL.replace(/accounts-login\.html.*/, '');
-            const res = await fetch(`${apiBase}api/config?t=${Date.now()}`, { cache: 'no-store' });
+            const res = await fetch(`${authAuthority}/api/config?t=${Date.now()}`, { cache: 'no-store' });
             if (res.ok) {
               const cfg = await res.json();
               if (cfg && Array.isArray(cfg.users)) {
@@ -488,15 +654,7 @@ window.addEventListener('message', (event) => {
             if (!savedUserStr) return;
             try {
               const curUser = JSON.parse(savedUserStr);
-              const curSub = (curUser.sub || curUser.username || '').toLowerCase();
-              const curEmail = (curUser.email || '').toLowerCase();
-              const curId = curUser.id || '';
-              const targetSub = (data.username || '').toLowerCase();
-              const targetEmail = (data.email || '').toLowerCase();
-              const targetId = data.userId || '';
-              const isMatch = (data.userId === '*' || targetId === curId || (targetSub && targetSub === curSub) || (targetEmail && targetEmail === curEmail));
-
-              if (isMatch && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
+              if (isUserTargeted(data, curUser) && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
                 handleForcedRevocation(`⚠️ 控制台已实时${data.action === 'DELETE_USER' ? '注销' : '冻结'}您的账号 [${curUser.sub || curUser.username}]，客户端已即时退登！`);
               }
             } catch (e) {}
@@ -511,18 +669,18 @@ window.addEventListener('message', (event) => {
             const savedUserStr = localStorage.getItem('yaoxi_client_user');
             if (!savedUserStr) return;
             const curUser = JSON.parse(savedUserStr);
-            const curSub = (curUser.sub || curUser.username || '').toLowerCase();
-            const curEmail = (curUser.email || '').toLowerCase();
-            const curId = curUser.id || '';
-            const targetSub = (data.username || '').toLowerCase();
-            const targetEmail = (data.email || '').toLowerCase();
-            const targetId = data.userId || '';
-            const isMatch = (data.userId === '*' || targetId === curId || (targetSub && targetSub === curSub) || (targetEmail && targetEmail === curEmail));
-
-            if (isMatch && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
+            if (isUserTargeted(data, curUser) && (data.status === 'suspended' || data.action === 'DELETE_USER' || data.action === 'FACTORY_RESET')) {
               handleForcedRevocation(`⚠️ 控制台已实时${data.action === 'DELETE_USER' ? '注销' : '冻结'}您的账号 [${curUser.sub || curUser.username}]，客户端已即时退登！`);
             }
           } catch (err) {}
+        } else if (e.key === 'yaoxi_sso_revoked_users' && e.newValue) {
+          const savedUserStr = localStorage.getItem('yaoxi_client_user');
+          if (savedUserStr) {
+            const curUser = JSON.parse(savedUserStr);
+            if (checkLocalRevocationBlacklist(curUser.sub || curUser.username, curUser.email, curUser.id)) {
+              handleForcedRevocation('⚠️ 控制台已将您的账号列入冻结黑名单，客户端已即时退登！');
+            }
+          }
         } else if (e.key === 'yaoxi_sso_config') {
           if (localStorage.getItem('yaoxi_client_token')) {
             validateAccountStatus();
@@ -784,6 +942,7 @@ window.addEventListener('message', (event) => {
 
       // Init on load
       handleOAuthCallback();
+      mountFrontChannelSync();
     })();
   </script>
 </body>

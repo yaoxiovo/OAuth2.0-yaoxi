@@ -94,6 +94,73 @@
   let activeConfig = null;
   let hasPendingChanges = false;
 
+  // --- Persistent Broadcast Channel Singleton (长驻单例，严禁 close 避免异步消息丢弃) ---
+  let adminBroadcastChannel = null;
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      adminBroadcastChannel = new BroadcastChannel('yaoxi_sso_channel');
+    }
+  } catch (e) {
+    console.warn('[Admin Console] BroadcastChannel init warning:', e);
+  }
+
+  // --- Blacklist Management (本地即时黑名单持久化，提供 0 延迟秒级拦截) ---
+  function updateLocalRevocationBlacklist(user, isRevoked) {
+    if (!user) return;
+    try {
+      let revokedList = [];
+      const stored = localStorage.getItem('yaoxi_sso_revoked_users');
+      if (stored) {
+        try { revokedList = JSON.parse(stored); } catch (e) {}
+      }
+      if (!Array.isArray(revokedList)) revokedList = [];
+
+      const uId = user.id || '';
+      const uName = (user.username || '').toLowerCase();
+      const uEmail = (user.email || '').toLowerCase();
+
+      revokedList = revokedList.filter(item => {
+        if (uId && item.id === uId) return false;
+        if (uName && item.username === uName) return false;
+        if (uEmail && item.email === uEmail) return false;
+        return true;
+      });
+
+      if (isRevoked) {
+        revokedList.push({
+          id: uId,
+          username: uName,
+          email: uEmail,
+          revokedAt: Date.now(),
+          status: 'suspended'
+        });
+      }
+
+      localStorage.setItem('yaoxi_sso_revoked_users', JSON.stringify(revokedList));
+    } catch (e) {
+      console.warn('[Admin Console] updateLocalRevocationBlacklist error:', e);
+    }
+  }
+
+  function syncAllSuspendedUsersToBlacklist() {
+    if (!activeConfig || !Array.isArray(activeConfig.users)) return;
+    try {
+      const revokedList = [];
+      for (const u of activeConfig.users) {
+        if (u.status !== 'active') {
+          revokedList.push({
+            id: u.id || '',
+            username: (u.username || '').toLowerCase(),
+            email: (u.email || '').toLowerCase(),
+            revokedAt: Date.now(),
+            status: u.status || 'suspended'
+          });
+        }
+      }
+      localStorage.setItem('yaoxi_sso_revoked_users', JSON.stringify(revokedList));
+    } catch (e) {}
+  }
+
   // --- Configuration Manager Helpers ---
   async function loadConfig() {
     try {
@@ -106,6 +173,7 @@
     if (!activeConfig) {
       activeConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     }
+    syncAllSuspendedUsersToBlacklist();
 
     // Always fetch remote KV config as authoritative source
     try {
@@ -117,6 +185,7 @@
         if (remote && Array.isArray(remote.domains) && Array.isArray(remote.users)) {
           activeConfig = remote;
           localStorage.setItem('yaoxi_sso_config', JSON.stringify(activeConfig));
+          syncAllSuspendedUsersToBlacklist();
           window.dispatchEvent(new Event('yaoxi_config_updated'));
           refreshAllViews();
         }
@@ -138,15 +207,26 @@
       timestamp: Date.now()
     };
 
-    // 1. BroadcastChannel (0延迟同源多标签/多窗口/SPA客户端即时通信)
-    if (typeof BroadcastChannel !== 'undefined') {
+    // 0. 本地黑名单持久化写入
+    const isSuspended = (payload.status === 'suspended' || payload.action === 'DELETE_USER' || payload.action === 'FACTORY_RESET');
+    if (payload.action === 'FACTORY_RESET') {
       try {
-        const channel = new BroadcastChannel('yaoxi_sso_channel');
-        channel.postMessage(payload);
-        channel.close();
-      } catch (e) {
-        console.warn('[Admin Console] BroadcastChannel dispatch failed:', e);
+        localStorage.setItem('yaoxi_sso_revoked_users', JSON.stringify([{ id: '*', username: '*', email: '*', status: 'suspended' }]));
+      } catch (e) {}
+    } else {
+      updateLocalRevocationBlacklist(user, isSuspended);
+    }
+
+    // 1. BroadcastChannel (0延迟同源长驻单例通信，绝不 close 保证异步事件队列不被切断)
+    try {
+      if (!adminBroadcastChannel && typeof BroadcastChannel !== 'undefined') {
+        adminBroadcastChannel = new BroadcastChannel('yaoxi_sso_channel');
       }
+      if (adminBroadcastChannel) {
+        adminBroadcastChannel.postMessage(payload);
+      }
+    } catch (e) {
+      console.warn('[Admin Console] BroadcastChannel dispatch failed:', e);
     }
 
     // 2. Storage Event (跨标签页原生 storage 监听兜底)
@@ -168,6 +248,7 @@
   function persistLocalConfig() {
     activeConfig.lastUpdated = new Date().toISOString();
     localStorage.setItem('yaoxi_sso_config', JSON.stringify(activeConfig));
+    syncAllSuspendedUsersToBlacklist();
     // Trigger storage event for same-window / cross-window sync
     window.dispatchEvent(new Event('yaoxi_config_updated'));
   }

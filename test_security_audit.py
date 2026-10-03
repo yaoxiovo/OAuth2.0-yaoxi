@@ -120,40 +120,54 @@ def test_account_revocation_and_client_guard():
         worker_code = f.read()
     assert "pathname === '/api/status'" in worker_code, "worker.js 缺少 /api/status 路由!"
 
-    # 2. 验证控制台即时广播
+    # 2. 验证控制台即时广播与黑名单持久化
     with open(admin_js, "r", encoding="utf-8") as f:
         admin_code = f.read()
     assert "function broadcastRevocationEvent" in admin_code, "admin.js 缺少 broadcastRevocationEvent 函数!"
     assert "new BroadcastChannel('yaoxi_sso_channel')" in admin_code, "admin.js 缺少 BroadcastChannel 广播!"
+    assert "channel.close()" not in admin_code, "admin.js 仍存在 channel.close() 导致异步广播队列丢失!"
+    assert "yaoxi_sso_revoked_users" in admin_code, "admin.js 缺少 yaoxi_sso_revoked_users 本地黑名单持久化!"
     assert "yaoxi_sso_revocation_event" in admin_code, "admin.js 缺少 cross-window storage 吊销广播!"
     assert "broadcastRevocationEvent(u, 'TOGGLE_STATUS'" in admin_code, "admin.js toggleUserStatus 未触发广播!"
     assert "broadcastRevocationEvent(u, 'DELETE_USER'" in admin_code, "admin.js deleteUser 未触发广播!"
 
-    # 3. 验证客户端 SDK 强化
+    # 3. 验证客户端 SDK 强化与跨域 Front-Channel 监听
     with open(sdk_js, "r", encoding="utf-8") as f:
         sdk_code = f.read()
     assert "_setupRevocationChannels" in sdk_code, "sdk/yaoxi-auth.js 缺少 _setupRevocationChannels!"
     assert "new BroadcastChannel('yaoxi_sso_channel')" in sdk_code, "sdk/yaoxi-auth.js 缺少 BroadcastChannel 监听!"
-    assert "yaoxi_sso_revocation_event" in sdk_code, "sdk/yaoxi-auth.js 缺少 storage 事件监听!"
+    assert "yaoxi_sso_revoked_users" in sdk_code, "sdk/yaoxi-auth.js 缺少 yaoxi_sso_revoked_users 黑名单响应!"
+    assert "YAOXI_FRONTCHANNEL_REVOCATION" in sdk_code, "sdk/yaoxi-auth.js 缺少 Front-Channel 跨域事件中继处理!"
     assert "assertActive" in sdk_code, "sdk/yaoxi-auth.js 缺少 assertActive 门禁方法!"
     assert "intervalMs = 3000" in sdk_code, "sdk/yaoxi-auth.js 轮询周期未优化为 3000ms!"
 
-    # 4. 验证客户端演示端 client-blog.html
+    # 4. 验证客户端演示端 client-blog.html 与 Front-Channel 中继挂载
     with open(blog_html, "r", encoding="utf-8") as f:
         blog_code = f.read()
     assert "handleForcedRevocation" in blog_code, "client-blog.html 缺少 handleForcedRevocation 函数!"
     assert "new BroadcastChannel('yaoxi_sso_channel')" in blog_code, "client-blog.html 缺少 BroadcastChannel 监听!"
-    assert "yaoxi_sso_revocation_event" in blog_code, "client-blog.html 缺少 storage 事件监听!"
+    assert "yaoxi_sso_revoked_users" in blog_code, "client-blog.html 缺少 yaoxi_sso_revoked_users 黑名单自省!"
+    assert "getSSOAuthorityBase" in blog_code, "client-blog.html 缺少权威鉴权域解析函数 getSSOAuthorityBase!"
+    assert "mountFrontChannelSync" in blog_code, "client-blog.html 缺少 mountFrontChannelSync 跨域中继挂载!"
+    assert "YAOXI_FRONTCHANNEL_REVOCATION" in blog_code, "client-blog.html 缺少 Front-Channel 吊销事件响应!"
     assert "validateAccountStatus(true)" in blog_code, "client-blog.html 评论操作缺少前置自省门禁拦截!"
     assert "revocation-alert-banner" in blog_code, "client-blog.html 缺少即时吊销警示横幅容器!"
     assert "token-badge-error" in blog_code, "client-blog.html 缺少 token-badge-error 状态样式!"
 
-    # 5. 验证登录认证界面防伪
+    # 5. 验证跨域前置中继独立页 channel-sync.html
+    sync_html = os.path.join(ROOT_DIR, "channel-sync.html")
+    assert os.path.exists(sync_html), "channel-sync.html 缺失!"
+    with open(sync_html, "r", encoding="utf-8") as f:
+        sync_code = f.read()
+    assert "YAOXI_FRONTCHANNEL_REVOCATION" in sync_code, "channel-sync.html 缺少 YAOXI_FRONTCHANNEL_REVOCATION 转发!"
+    assert "new BroadcastChannel('yaoxi_sso_channel')" in sync_code, "channel-sync.html 缺少 BroadcastChannel 监听!"
+
+    # 6. 验证登录认证界面防伪
     with open(login_js, "r", encoding="utf-8") as f:
         login_code = f.read()
     assert "activeUserSession.status !== 'active'" in login_code, "accounts-login.js 未在签发时校验 status!"
 
-    print("  ✅ 账号吊销即时退登、双通道广播、高频心跳与客户端门禁断言全部通过！")
+    print("  ✅ 账号吊销即时退登、双通道广播、Front-Channel跨域中继与客户端门禁断言全部通过！")
 
 if __name__ == "__main__":
     print("\n==================================================")

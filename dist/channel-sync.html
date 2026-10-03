@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yaoxi SSO Front-Channel Silent Sync Relay</title>
+</head>
+<body style="display:none;">
+  <script>
+    /**
+     * channel-sync.html - 耀西统一身份认证跨域前置通道 (OIDC Front-Channel Logout Relay)
+     * 运行在 accounts.yaoxi.cloud 域下，作为子业务系统 (如 blog.yaoxi.wiki) 的隐藏 iframe 桥梁。
+     * 同源监听 accounts 域的 BroadcastChannel 与 LocalStorage 变更，并将吊销指令即时中继至宿主父窗口。
+     */
+    (function () {
+      'use strict';
+
+      function getRevokedUsers() {
+        try {
+          const raw = localStorage.getItem('yaoxi_sso_revoked_users');
+          if (raw) {
+            const list = JSON.parse(raw);
+            if (Array.isArray(list)) return list;
+          }
+        } catch (e) {}
+        return [];
+      }
+
+      function relayToParent(type, payload) {
+        if (window.parent && window.parent !== window) {
+          try {
+            window.parent.postMessage({
+              type: type,
+              source: 'YAOXI_SSO_FRONTCHANNEL_RELAY',
+              payload: payload,
+              timestamp: Date.now()
+            }, '*');
+          } catch (e) {
+            console.warn('[SSO Channel Relay] postMessage to parent failed:', e);
+          }
+        }
+      }
+
+      // 1. 同源长驻 BroadcastChannel 监听 (0 毫秒捕获控制台即时吊销广播)
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const ssoChannel = new BroadcastChannel('yaoxi_sso_channel');
+          ssoChannel.onmessage = function (event) {
+            if (event && event.data && event.data.type === 'YAOXI_ACCOUNT_REVOCATION_EVENT') {
+              relayToParent('YAOXI_FRONTCHANNEL_REVOCATION', event.data);
+            }
+          };
+        } catch (e) {
+          console.warn('[SSO Channel Relay] BroadcastChannel listening failed:', e);
+        }
+      }
+
+      // 2. 同源 Storage Event 监听 (跨标签页原生存储事件中继)
+      window.addEventListener('storage', function (e) {
+        if (e.key === 'yaoxi_sso_revocation_event' && e.newValue) {
+          try {
+            const data = JSON.parse(e.newValue);
+            relayToParent('YAOXI_FRONTCHANNEL_REVOCATION', data);
+          } catch (err) {}
+        } else if (e.key === 'yaoxi_sso_revoked_users' && e.newValue) {
+          try {
+            const list = JSON.parse(e.newValue);
+            relayToParent('YAOXI_FRONTCHANNEL_BLACKLIST_UPDATE', list);
+          } catch (err) {}
+        }
+      });
+
+      // 3. 响应宿主窗口的主动核查命令
+      window.addEventListener('message', function (event) {
+        if (!event.data || typeof event.data !== 'object') return;
+        if (event.data.type === 'YAOXI_CHECK_REVOCATION_STATUS') {
+          const revokedUsers = getRevokedUsers();
+          relayToParent('YAOXI_FRONTCHANNEL_STATUS_RESPONSE', {
+            requestId: event.data.requestId,
+            revokedUsers: revokedUsers
+          });
+        }
+      });
+
+      // 4. 首屏就绪握手：向父窗口汇报当前已冻结/吊销黑名单
+      relayToParent('YAOXI_FRONTCHANNEL_READY', {
+        revokedUsers: getRevokedUsers()
+      });
+    })();
+  </script>
+</body>
+</html>

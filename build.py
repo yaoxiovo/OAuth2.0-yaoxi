@@ -99,6 +99,7 @@ copy_files = [
     "admin.js",
     "client-blog.html",
     "blog-login.css",
+    "channel-sync.html",
     "_headers",
     "_routes.json",
     ".assetsignore",

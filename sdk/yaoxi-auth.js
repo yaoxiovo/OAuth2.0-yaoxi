@@ -77,8 +77,26 @@
               const data = JSON.parse(event.newValue);
               this._handleRevocationEvent(data);
             } catch (e) {}
+          } else if (event.key === 'yaoxi_sso_revoked_users' && event.newValue) {
+            this.validateStatus();
           } else if (event.key === 'yaoxi_sso_config') {
             this.validateStatus();
+          }
+        });
+
+        // 3. OIDC Front-Channel 跨域 iframe 中继消息监听
+        window.addEventListener('message', (event) => {
+          if (!event.data || typeof event.data !== 'object') return;
+          if (event.data.type === 'YAOXI_FRONTCHANNEL_REVOCATION') {
+            this._handleRevocationEvent(event.data.payload || event.data);
+          } else if (event.data.type === 'YAOXI_FRONTCHANNEL_READY' || event.data.type === 'YAOXI_FRONTCHANNEL_BLACKLIST_UPDATE') {
+            const list = (event.data.payload && event.data.payload.revokedUsers) || event.data.revokedUsers || event.data.payload;
+            if (Array.isArray(list)) {
+              try {
+                localStorage.setItem('yaoxi_sso_revoked_users', JSON.stringify(list));
+              } catch (e) {}
+              this.validateStatus();
+            }
           }
         });
       }
@@ -311,6 +329,29 @@
 
       const curSub = (user.sub || user.username || '').toLowerCase();
       const curEmail = (user.email || '').toLowerCase();
+      const curId = user.id || '';
+
+      // 0. 本地 LocalStorage 独立黑名单极速自省 (0 延迟毫秒级拦截)
+      try {
+        const blStr = localStorage.getItem('yaoxi_sso_revoked_users');
+        if (blStr) {
+          const bl = JSON.parse(blStr);
+          if (Array.isArray(bl)) {
+            const hit = bl.some(item => {
+              if (item.id === '*' || item.username === '*' || item.email === '*') return true;
+              if (curId && item.id === curId) return true;
+              if (curSub && (item.username === curSub || item.email === curSub)) return true;
+              if (curEmail && (item.email === curEmail || item.username === curEmail)) return true;
+              return false;
+            });
+            if (hit) {
+              this.logout();
+              this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_BLACKLIST', username: curSub });
+              return false;
+            }
+          }
+        }
+      } catch (e) {}
 
       // 1. 本地 LocalStorage 配置优先自省 (同源或本地调试极速判定)
       try {
@@ -332,10 +373,16 @@
         }
       } catch (e) {}
 
+      // 解析权威认证中心基地址 (优先信任 Token Payload 中的 iss 机构)
+      let targetAuthUrl = this.authUrl;
+      if (user.iss && typeof user.iss === 'string' && user.iss.startsWith('http')) {
+        targetAuthUrl = user.iss;
+      }
+      const base = targetAuthUrl.replace(/\/+$/, '');
+
       // 2. 服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存)
       try {
-        const base = this.authUrl.replace(/\/$/, '');
-        const statusUrl = `${base}/api/status?username=${encodeURIComponent(curSub)}&email=${encodeURIComponent(curEmail)}&t=${Date.now()}`;
+        const statusUrl = `${base}/api/status?username=${encodeURIComponent(curSub)}&email=${encodeURIComponent(curEmail)}&id=${encodeURIComponent(curId)}&t=${Date.now()}`;
         const res = await fetch(statusUrl, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
@@ -350,7 +397,7 @@
 
       // 3. 服务端配置 /api/config 兜底自省端点
       try {
-        const cfgRes = await fetch(`${this.authUrl.replace(/\/$/, '')}/api/config?t=${Date.now()}`, { cache: 'no-store' });
+        const cfgRes = await fetch(`${base}/api/config?t=${Date.now()}`, { cache: 'no-store' });
         if (cfgRes.ok) {
           const cfg = await cfgRes.json();
           if (cfg && Array.isArray(cfg.users)) {
