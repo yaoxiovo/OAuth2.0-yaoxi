@@ -9,6 +9,7 @@
 - **泛域名全面支持**: 支持 `*.yaoxi.wiki` 与 `*.yaoxi.cloud` 全子域，任何携带合法防伪凭证的子域均可无缝拉起登录。
 - **零前端调试干扰**: 移除开发期 JWT 数据流、Base64 串与倒计时；错误状态采用标准 Google 400 简洁提示，不暴露任何内部安全参数。
 - **开箱即用 SDK (`sdk/yaoxi-auth.js`)**: 类似 Google 登录 SDK，支持 Popup 弹窗 (1060x620) 与 Redirect 跳转两种接入方式，自动监听 postMessage 跨域回传。
+- **个人账号个性化平台凭据下发**: 支持在管理后台为指定账号绑定 GitHub PAT、Cloudflare API Token 等平台凭据，在用户授权登录时随 JWT Claims 与 Token Bundle 一同安全下发给受信任客户端，供客户端无缝调取第三方开放平台能力。
 - **1:1 Google Material 3 宽屏卡片**: 1040px 双栏卡片结构、Material 3 浅蓝提示横幅、浮动边框输入框与右下角标准按钮。
 
 ---
@@ -94,6 +95,10 @@ sequenceDiagram
   "roles": ["admin", "author", "super_user"],
   "scope": "openid profile email admin",
   "amr": ["passkey", "fido2", "hw_biometrics", "fingerprint"],
+  "platform_tokens": {
+    "github": "ghp_xxxxxxxxxxxxxxxxxxxx",
+    "cloudflare": "cf_token_xxxxxxxxxxxx"
+  },
   "passkey_proof": {
     "authType": "webauthn_passkey_assertion",
     "signature": "verified"

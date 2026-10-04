@@ -169,6 +169,63 @@ def test_account_revocation_and_client_guard():
 
     print("  ✅ 账号吊销即时退登、双通道广播、Front-Channel跨域中继与客户端门禁断言全部通过！")
 
+def test_personalized_platform_tokens():
+    print("\nTesting Personalized Platform Tokens: 个人账号个性化平台 Token 携带与客户端下发...")
+    config_js = os.path.join(ROOT_DIR, "functions", "api", "config.js")
+    login_api_js = os.path.join(ROOT_DIR, "functions", "api", "login.js")
+    worker_js = os.path.join(ROOT_DIR, "worker.js")
+    accounts_login_js = os.path.join(ROOT_DIR, "accounts-login.js")
+    sdk_js = os.path.join(ROOT_DIR, "sdk", "yaoxi-auth.js")
+    admin_html = os.path.join(ROOT_DIR, "admin.html")
+    admin_js = os.path.join(ROOT_DIR, "admin.js")
+    client_blog = os.path.join(ROOT_DIR, "client-blog.html")
+
+    # 1. 验证公共配置脱敏：绝对杜绝未授权访客通过 /api/config 窃取用户的 GitHub/Cloudflare Token
+    for path in [config_js, worker_js]:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        assert "delete safeUser.platformTokens;" in code, f"{path} 未在 sanitizePublicConfig 中脱敏剔除 platformTokens!"
+
+    # 2. 验证服务端登录核验 /api/login 返回个性化 platform_tokens
+    for path in [login_api_js, worker_js]:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        assert "platform_tokens: platformTokens" in code or "platform_tokens: matchedUser.platformTokens" in code, f"{path} 签发 JWT 未挂载 platform_tokens!"
+        assert "user: safeUser" in code, f"{path} 未返回 safeUser!"
+
+    # 3. 验证网关 accounts-login.js 携带 platform_tokens 回传客户端
+    with open(accounts_login_js, "r", encoding="utf-8") as f:
+        login_code = f.read()
+    assert "platform_tokens: platformTokens" in login_code, "accounts-login.js 未回传 platform_tokens!"
+    assert "yaoxi_client_platform_tokens" in login_code, "accounts-login.js 未将 platform_tokens 存入客户端存储!"
+
+    # 4. 验证 SDK 具备 getPlatformTokens() 与 getPlatformToken(name)
+    with open(sdk_js, "r", encoding="utf-8") as f:
+        sdk_code = f.read()
+    assert "getPlatformTokens()" in sdk_code, "sdk/yaoxi-auth.js 缺少 getPlatformTokens() 方法!"
+    assert "getPlatformToken(platformName)" in sdk_code, "sdk/yaoxi-auth.js 缺少 getPlatformToken() 方法!"
+    assert "platform_tokens" in sdk_code, "sdk/yaoxi-auth.js 未解析或存储 platform_tokens!"
+
+    # 5. 验证管理后台具备配置 GitHub、Cloudflare 等凭据的界面与逻辑
+    with open(admin_html, "r", encoding="utf-8") as f:
+        admin_h = f.read()
+    assert "edit-user-token-github" in admin_h, "admin.html 缺少 GitHub Token 输入框!"
+    assert "edit-user-token-cloudflare" in admin_h, "admin.html 缺少 Cloudflare Token 输入框!"
+
+    with open(admin_js, "r", encoding="utf-8") as f:
+        admin_c = f.read()
+    assert "edit-user-token-github" in admin_c, "admin.js 缺少 GitHub Token 逻辑处理!"
+    assert "u.platformTokens = platformTokens" in admin_c or "platformTokens" in admin_c, "admin.js 未保存 platformTokens!"
+
+    # 6. 验证客户端演示界面展示个性化平台 Token
+    with open(client_blog, "r", encoding="utf-8") as f:
+        blog_c = f.read()
+    assert "token-platform-tokens-box" in blog_c, "client-blog.html 缺少平台凭证展示容器!"
+    assert "GitHub Token" in blog_c, "client-blog.html 缺少 GitHub Token 显示!"
+    assert "Cloudflare Token" in blog_c, "client-blog.html 缺少 Cloudflare Token 显示!"
+
+    print("  ✅ 个人账号个性化平台 Token（GitHub/Cloudflare等）全链路携带与安全脱敏测试全部通过！")
+
 if __name__ == "__main__":
     print("\n==================================================")
     print(" 🧪 运行安全审计全量回归单元测试套件")
@@ -180,6 +237,7 @@ if __name__ == "__main__":
     test_vulnerability_7_xss_protection()
     test_timing_attack_protection()
     test_account_revocation_and_client_guard()
+    test_personalized_platform_tokens()
     print("\n==================================================")
     print(" 💯 全部安全漏洞与即时退登门禁机制验证通过！系统就绪！")
     print("==================================================\n")

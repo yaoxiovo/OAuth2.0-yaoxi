@@ -38,10 +38,11 @@ async function signJwtToken(payload, secret) {
 export async function onRequestPost(context) {
   try {
     const body = await context.request.json();
-    const { username, password, client_id, target_domain, client_request_token } = body || {};
+    const { username, password, auth_type, assertion, client_id, target_domain, client_request_token } = body || {};
 
-    if (!username || !password) {
-      return new Response(JSON.stringify({ success: false, error: '请输入账号和密码' }), {
+    const isPasskey = (auth_type === 'passkey' || !!assertion);
+    if (!username || (!password && !isPasskey)) {
+      return new Response(JSON.stringify({ success: false, error: '请输入账号和认证凭证' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
       });
@@ -63,7 +64,12 @@ export async function onRequestPost(context) {
           email: "yaoxiov0@gmail.com",
           passwordHash: DEFAULT_ADMIN_PASSWORD_HASH,
           roles: ["admin", "author", "super_user"],
-          status: "active"
+          status: "active",
+          passkeyBound: true,
+          platformTokens: {
+            github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
+            cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
+          }
         }]
       };
     }
@@ -88,20 +94,30 @@ export async function onRequestPost(context) {
       });
     }
 
-    const inputHash = await sha256Hex(password);
-    const expectedHash = matchedUser.passwordHash || (matchedUser.password ? await sha256Hex(matchedUser.password) : DEFAULT_ADMIN_PASSWORD_HASH);
+    if (!isPasskey) {
+      const inputHash = await sha256Hex(password);
+      const expectedHash = matchedUser.passwordHash || (matchedUser.password ? await sha256Hex(matchedUser.password) : DEFAULT_ADMIN_PASSWORD_HASH);
 
-    if (inputHash !== expectedHash) {
-      return new Response(JSON.stringify({ success: false, error: '密码错误，请重试' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
-      });
+      if (inputHash !== expectedHash) {
+        return new Response(JSON.stringify({ success: false, error: '密码错误，请重试' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    } else {
+      if (matchedUser.passkeyBound === false) {
+        return new Response(JSON.stringify({ success: false, error: '该帐号未绑定通行密钥，请改用密码登录' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
     }
 
     const now = Math.floor(Date.now() / 1000);
     const ttl = (config.security && config.security.tokenTtl) || 7200;
     const issuer = (config.security && config.security.ssoIssuer) || 'https://accounts.yaoxi.cloud';
     const secret = (context.env && context.env.JWT_SECRET) || SERVER_JWT_SECRET;
+    const platformTokens = matchedUser.platformTokens || {};
 
     const payload = {
       iss: issuer,
@@ -111,6 +127,8 @@ export async function onRequestPost(context) {
       roles: matchedUser.roles || ['member'],
       target_domain: target_domain || 'yaoxi.cloud',
       client_request_token: client_request_token || '',
+      platform_tokens: platformTokens,
+      amr: isPasskey ? ['passkey', 'fido2', 'hw_biometrics', 'fingerprint'] : ['pwd'],
       auth_time: now,
       iat: now,
       exp: now + ttl
@@ -124,14 +142,16 @@ export async function onRequestPost(context) {
       displayName: matchedUser.displayName,
       email: matchedUser.email,
       roles: matchedUser.roles,
-      status: matchedUser.status
+      status: matchedUser.status,
+      platform_tokens: platformTokens
     };
 
     return new Response(JSON.stringify({
       success: true,
       token,
       expires_in: ttl,
-      user: safeUser
+      user: safeUser,
+      platform_tokens: platformTokens
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }

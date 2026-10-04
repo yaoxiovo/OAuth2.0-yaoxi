@@ -181,79 +181,80 @@ async function verifyCryptographicTokenSignature(token, targetDomain = 'yaoxi.cl
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const pathname = url.pathname.toLowerCase();
+  const url = new URL(request.url);
+  const pathname = url.pathname.toLowerCase();
 
-    // 1. 放行静态资源文件 (.css, .js, .png, .ico, .svg 等)、后台管理面板与 API 路由
-    if (
-      request.method === 'OPTIONS' ||
-      pathname.endsWith('.css') ||
-      pathname.endsWith('.js') ||
-      pathname.endsWith('.png') ||
-      pathname.endsWith('.jpg') ||
-      pathname.endsWith('.jpeg') ||
-      pathname.endsWith('.ico') ||
-      pathname.endsWith('.svg') ||
-      pathname.endsWith('.json') ||
-      pathname.endsWith('.woff') ||
-      pathname.endsWith('.woff2') ||
-      pathname.includes('client-blog') ||
-      pathname.includes('admin') ||
-      pathname.startsWith('/api/')
-    ) {
-      return fetch(request);
-    }
-
-    // 2. 严格参数白名单校验: 携带任何非法/额外参数立即 400
-    for (const key of url.searchParams.keys()) {
-      if (!ALLOWED_PARAMS.has(key)) {
-        return new Response(GOOGLE_400_HTML, {
-          status: 400,
-          statusText: 'Bad Request',
-          headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-            'Pragma': 'no-cache',
-            'X-Robots-Tag': 'noindex, nofollow'
-          }
-        });
-      }
-    }
-
-    // 3. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
-    const targetDomain = url.searchParams.get('target_domain');
-    if (targetDomain && !isAllowedDomain(targetDomain)) {
-      return new Response(GOOGLE_400_HTML, {
-        status: 400,
-        statusText: 'Bad Request',
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'X-Robots-Tag': 'noindex, nofollow'
-        }
-      });
-    }
-
-    // 4. 严格校验 client_request_token 密码学防伪签名
-    const token = url.searchParams.get('client_request_token');
-    const resolvedTarget = targetDomain || 'yaoxi.cloud';
-    const secret = (env && env.SSO_HANDSHAKE_SECRET) || SSO_HANDSHAKE_SECRET;
-    const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget, secret);
-
-    if (!isValidSignature) {
-      return new Response(GOOGLE_400_HTML, {
-        status: 400,
-        statusText: 'Bad Request',
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'X-Robots-Tag': 'noindex, nofollow'
-        }
-      });
-    }
-
+  // 1. 放行静态资源文件 (.css, .js, .png, .ico, .svg 等)、后台管理面板与 API 路由
+  if (
+    request.method === 'OPTIONS' ||
+    pathname.endsWith('.css') ||
+    pathname.endsWith('.js') ||
+    pathname.endsWith('.png') ||
+    pathname.endsWith('.jpg') ||
+    pathname.endsWith('.jpeg') ||
+    pathname.endsWith('.ico') ||
+    pathname.endsWith('.svg') ||
+    pathname.endsWith('.json') ||
+    pathname.endsWith('.woff') ||
+    pathname.endsWith('.woff2') ||
+    pathname.includes('client-blog') ||
+    pathname.includes('admin') ||
+    pathname.startsWith('/api/')
+  ) {
     return fetch(request);
   }
+
+  // 2. 严格参数白名单校验: 携带任何非法/额外参数立即 400
+  for (const key of url.searchParams.keys()) {
+    if (!ALLOWED_PARAMS.has(key)) {
+      return new Response(GOOGLE_400_HTML, {
+        status: 400,
+        statusText: 'Bad Request',
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+          'X-Robots-Tag': 'noindex, nofollow'
+        }
+      });
+    }
+  }
+
+  // 3. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
+  const targetDomain = url.searchParams.get('target_domain');
+  if (targetDomain && !isAllowedDomain(targetDomain)) {
+    return new Response(GOOGLE_400_HTML, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'X-Robots-Tag': 'noindex, nofollow'
+      }
+    });
+  }
+
+  // 4. 严格校验 client_request_token 密码学防伪签名
+  const token = url.searchParams.get('client_request_token');
+  const resolvedTarget = targetDomain || 'yaoxi.cloud';
+  const secret = (context.env && context.env.SSO_HANDSHAKE_SECRET) || SSO_HANDSHAKE_SECRET;
+  const isValidSignature = await verifyCryptographicTokenSignature(token, resolvedTarget, secret);
+
+  if (!isValidSignature) {
+    return new Response(GOOGLE_400_HTML, {
+      status: 400,
+      statusText: 'Bad Request',
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'X-Robots-Tag': 'noindex, nofollow'
+      }
+    });
+  }
+
+  return fetch(request);
+}
+
 };

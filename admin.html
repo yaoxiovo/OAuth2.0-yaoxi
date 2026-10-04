@@ -274,6 +274,7 @@
                   <th>账号名称</th>
                   <th>认证邮箱</th>
                   <th>登录密码</th>
+                  <th>绑定平台 Token</th>
                   <th>分配角色</th>
                   <th>通行密钥 (Passkey)</th>
                   <th>账号状态</th>
@@ -649,6 +650,29 @@
             <button type="button" class="btn btn-secondary btn-sm" onclick="generateRandomPassword()">🎲 随机密码</button>
           </div>
           <div class="form-hint">用户在前台密码步骤验证时以此密码为准</div>
+        <div class="form-group" style="padding: 12px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; margin: 12px 0;">
+          <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--primary);">
+            🔑 个人账号个性化平台 Token 绑定 (授权后一并下发至客户端)
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 12px;">GitHub Personal Access Token</label>
+            <div style="display: flex; gap: 6px;">
+              <input type="password" id="edit-user-token-github" class="form-input" style="font-family: var(--admin-mono); font-size: 12px;" placeholder="ghp_xxxx 或 github_pat_xxxx">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="toggleSecretVisibility('edit-user-token-github')">👁️</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 8px;">
+            <label class="form-label" style="font-size: 12px;">Cloudflare API Token / Global Key</label>
+            <div style="display: flex; gap: 6px;">
+              <input type="password" id="edit-user-token-cloudflare" class="form-input" style="font-family: var(--admin-mono); font-size: 12px;" placeholder="例如：cf_api_token_xxxx">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="toggleSecretVisibility('edit-user-token-cloudflare')">👁️</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" style="font-size: 12px;">其他平台 Token (JSON 格式扩展，如 AWS、OpenAI等)</label>
+            <input type="text" id="edit-user-tokens-custom" class="form-input" style="font-family: var(--admin-mono); font-size: 12px;" placeholder='{"openai": "sk-...", "aws": "..."}'>
+            <div class="form-hint" style="font-size: 11px;">这些凭据仅对授权通过的本人客户端下发，用于第三方 API 调用。</div>
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">角色权限 (用逗号分隔)</label>

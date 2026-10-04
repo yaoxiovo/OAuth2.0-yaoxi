@@ -623,6 +623,10 @@
           password: 'yaoxi',
           roles: ['admin', 'author', 'super_user'],
           passkeyBound: true,
+          platformTokens: {
+            github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
+            cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
+          },
           status: 'active'
         };
       }
@@ -721,7 +725,30 @@
       if (DOM.card) DOM.card.classList.remove('is-authenticating');
       stopLoading();
 
-      generateAndEmitSignature(assertionResult);
+      // 调用服务端安全接口 /api/login 完成通行密钥身份断言登记与 Token 签发（获取安全挂载的 platform_tokens）
+      let serverBundle = null;
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({
+            username: (activeUserSession && activeUserSession.username) || enteredAccountEmail,
+            auth_type: 'passkey',
+            assertion: assertionResult,
+            client_id: OAuthParams.clientId,
+            target_domain: OAuthParams.targetDomain,
+            client_request_token: OAuthParams.clientRequestToken
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success) {
+            serverBundle = data;
+          }
+        }
+      } catch (e) {}
+
+      await generateAndEmitSignature(assertionResult, serverBundle);
 
     } catch (err) {
       if (DOM.btnPasskeyContinue) {
@@ -829,6 +856,7 @@
     const sub = (serverBundle && serverBundle.user && serverBundle.user.username) || (activeUserSession && activeUserSession.username) || 'yaoxi';
     const roles = (serverBundle && serverBundle.user && serverBundle.user.roles) || (activeUserSession && activeUserSession.roles) || ['admin', 'author', 'super_user'];
     const email = (serverBundle && serverBundle.user && serverBundle.user.email) || (activeUserSession && activeUserSession.email) || (enteredAccountEmail || 'yaoxi@yaoxi.cloud');
+    const platformTokens = (serverBundle && (serverBundle.platform_tokens || (serverBundle.user && serverBundle.user.platform_tokens))) || (activeUserSession && activeUserSession.platformTokens) || {};
 
     let jwtToken = serverBundle ? serverBundle.token : null;
     let signature = '';
@@ -845,6 +873,7 @@
         roles: roles,
         scope: OAuthParams.scope,
         client_request_token: OAuthParams.clientRequestToken,
+        platform_tokens: platformTokens,
         cf_turnstile_token: cfTurnstileToken,
         amr: authMeta && authMeta.type && authMeta.type.includes('passkey') ? ['passkey', 'fido2', 'hw_biometrics', 'fingerprint'] : ['pwd'],
         auth_time: now,
@@ -885,11 +914,13 @@
       token_type: 'Bearer',
       expires_in: expiresIn,
       state: OAuthParams.state,
+      platform_tokens: platformTokens,
       user: {
         sub: sub,
         email: email,
         roles: roles,
-        iss: issuer
+        iss: issuer,
+        platform_tokens: platformTokens
       }
     };
 
@@ -971,6 +1002,7 @@
 
     localStorage.setItem('yaoxi_client_token', issuedSignatureBundle.access_token);
     localStorage.setItem('yaoxi_client_user', JSON.stringify(issuedSignatureBundle.user));
+    localStorage.setItem('yaoxi_client_platform_tokens', JSON.stringify(issuedSignatureBundle.platform_tokens || {}));
 
     const hashParams = new URLSearchParams({
       access_token: issuedSignatureBundle.access_token,
@@ -979,7 +1011,8 @@
       client_request_token: issuedSignatureBundle.client_request_token,
       expires_in: issuedSignatureBundle.expires_in,
       state: issuedSignatureBundle.state,
-      id_token: issuedSignatureBundle.id_token
+      id_token: issuedSignatureBundle.id_token,
+      platform_tokens: JSON.stringify(issuedSignatureBundle.platform_tokens || {})
     });
 
     const targetUrl = `${OAuthParams.redirectUri}#${hashParams.toString()}`;

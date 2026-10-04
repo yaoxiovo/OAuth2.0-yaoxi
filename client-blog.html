@@ -206,6 +206,10 @@
       <div class="token-meta-grid" id="token-meta-grid">
         <!-- Metadata -->
       </div>
+
+      <div id="token-platform-tokens-box">
+        <!-- Platform Tokens Injected via JS -->
+      </div>
     </div>
 
     <!-- Featured Protected Article -->
@@ -778,6 +782,39 @@ window.addEventListener('message', (event) => {
             <strong>${Array.isArray(user.amr) ? user.amr.join(', ') : 'passkey'}</strong>
           </div>
         `;
+
+        // Render Personalized Platform Tokens
+        const ptBox = document.getElementById('token-platform-tokens-box');
+        if (ptBox) {
+          const pt = user.platform_tokens || {};
+          const ptEntries = Object.entries(pt).filter(([_, v]) => !!v);
+          if (ptEntries.length > 0) {
+            ptBox.innerHTML = `
+              <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--b-border);">
+                <div style="font-size: 13px; font-weight: 700; color: #a5b4fc; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                  <span>🔑 随账号下发的个性化平台 Token (已安全挂载至客户端)</span>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px;">
+                  ${ptEntries.map(([platform, pToken]) => `
+                    <div style="background: rgba(13, 17, 23, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 12px;">
+                      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-size: 11px; font-weight: 600; color: var(--b-text-muted); text-transform: uppercase;">
+                          ${platform === 'github' ? '🐙 GitHub Token' : platform === 'cloudflare' ? '⚡ Cloudflare Token' : `${platform} Token`}
+                        </span>
+                        <span class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 10px; padding: 2px 6px; border-radius: 4px;">已就绪</span>
+                      </div>
+                      <code style="font-family: var(--b-font-mono); font-size: 11px; color: #67e8f9; word-break: break-all;">
+                        ${pToken.length > 24 ? pToken.substring(0, 10) + '••••••••' + pToken.slice(-6) : pToken}
+                      </code>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          } else {
+            ptBox.innerHTML = '';
+          }
+        }
 
         // Update Navbar
         document.getElementById('btn-goto-sso').style.display = 'none';

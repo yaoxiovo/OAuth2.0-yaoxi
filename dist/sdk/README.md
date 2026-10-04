@@ -159,11 +159,13 @@ interface AuthResult {
     roles: string[];        // 权限角色列表 (如 ["admin", "author"])
     iss: string;            // 签发机构 (https://accounts.yaoxi.cloud)
     amr: string[];          // 认证方式 (["passkey", "fido2"] 或 ["pwd"])
+    platform_tokens?: Record<string, string>; // 随个人账号下发的个性化第三方平台凭证
   };
   accessToken: string;      // 生产级 RS256 JWT Token
   idToken: string;          // 身份 ID Token
   signature: string;        // 硬件防伪数字签名
   expiresIn: number;        // Token 有效期秒数 (默认 7200 秒)
+  platformTokens?: Record<string, string>; // 个性化平台 Token 字典 (如 { github: "...", cloudflare: "..." })
 }
 ```
 
@@ -179,17 +181,23 @@ interface AuthResult {
 #### 5. `auth.getToken(): string | null`
 获取当前有效的 JWT Access Token，可直接附加到 API 请求的 `Authorization: Bearer <token>` 请求头中。
 
-#### 6. `auth.validateStatus(): Promise<boolean>`
+#### 6. `auth.getPlatformTokens(): Record<string, string>`
+获取当前用户授权携带的所有第三方平台凭证映射字典（如 `{ github: "ghp_...", cloudflare: "cf_token_..." }`）。
+
+#### 7. `auth.getPlatformToken(platformName: string): string | null`
+获取指定第三方平台的个性化 Token。例如 `auth.getPlatformToken('github')` 或 `auth.getPlatformToken('cloudflare')`。未配置时返回 `null`。
+
+#### 8. `auth.validateStatus(): Promise<boolean>`
 **实时联网探测用户账号状态**。向 Cloudflare KV 服务端校验当前登录的账号是否已被管理员冻结。若已被冻结，SDK 会自动调用 `logout()` 销毁本地凭证并返回 `false`。
 
-#### 7. `auth.watchAccountStatus(onFrozenCallback, intervalMs = 60000): function`
+#### 9. `auth.watchAccountStatus(onFrozenCallback, intervalMs = 60000): function`
 **自动监听账号实时状态**。当用户切换标签页切回当前网页（`window.focus`）或定时轮询时，自动触发状态探测。若检测到已被冻结，触发 `onFrozenCallback`。返回一个销毁监听器的函数。
 
-#### 8. `auth.onAuthStateChanged(callback): void`
+#### 10. `auth.onAuthStateChanged(callback): void`
 监听登录态变化事件（登录、登出均会实时触发回调，传入最新的 `user` 对象或 `null`）。
 
-#### 9. `auth.logout(): void`
-清除本地所有 Token、用户信息及过期时间戳缓存，并向监听器下发登出通知。
+#### 11. `auth.logout(): void`
+清除本地所有 Token、个性化平台凭据、用户信息及过期时间戳缓存，并向监听器下发登出通知。
 
 ---
 

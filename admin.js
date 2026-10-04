@@ -55,6 +55,10 @@
         roles: ["admin", "author", "super_user"],
         status: "active",
         passkeyBound: true,
+        platformTokens: {
+          github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
+          cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
+        },
         lastLogin: new Date().toISOString()
       }
     ],
@@ -529,11 +533,25 @@
     });
 
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding:32px;">暂无匹配的授权用户</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding:32px;">暂无匹配的授权用户</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = filtered.map(u => `
+    tbody.innerHTML = filtered.map(u => {
+      const pt = u.platformTokens || {};
+      const ptKeys = Object.keys(pt).filter(k => !!pt[k]);
+      let ptBadges = '';
+      if (ptKeys.length === 0) {
+        ptBadges = '<span style="color:var(--text-dim); font-size:11px;">未绑定</span>';
+      } else {
+        ptBadges = ptKeys.map(k => {
+          if (k === 'github') return '<span class="badge badge-primary" title="GitHub Token 已配置">🐙 GitHub</span>';
+          if (k === 'cloudflare') return '<span class="badge badge-warning" title="Cloudflare Token 已配置">⚡ Cloudflare</span>';
+          return `<span class="badge badge-neutral" title="${escapeHtml(k)} Token 已配置">${escapeHtml(k)}</span>`;
+        }).join('');
+      }
+
+      return `
       <tr>
         <td>
           <div style="display:flex; align-items:center; gap:8px;">
@@ -548,6 +566,11 @@
         <td>
           <div style="display:flex; align-items:center; gap:6px;">
             <span style="font-family:var(--admin-mono); font-size:12px; color:var(--text-dim);">🔒 SHA-256 加密保护</span>
+          </div>
+        </td>
+        <td>
+          <div style="display:flex; flex-wrap:wrap; gap:4px;">
+            ${ptBadges}
           </div>
         </td>
         <td>
@@ -578,7 +601,8 @@
           </div>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   };
 
   window.toggleUserStatus = async function (id, checked) {
@@ -607,6 +631,9 @@
     const inputEmail = document.getElementById('edit-user-email');
     const inputDisplay = document.getElementById('edit-user-displayname');
     const inputPwd = document.getElementById('edit-user-password');
+    const inputTokenGithub = document.getElementById('edit-user-token-github');
+    const inputTokenCf = document.getElementById('edit-user-token-cloudflare');
+    const inputTokensCustom = document.getElementById('edit-user-tokens-custom');
     const inputRoles = document.getElementById('edit-user-roles');
     const checkPasskey = document.getElementById('edit-user-passkey');
     const checkStatus = document.getElementById('edit-user-status');
@@ -622,6 +649,16 @@
       inputDisplay.value = u.displayName || '';
       inputPwd.value = '';
       inputPwd.placeholder = '留空表示保持原密码不变';
+      
+      const pt = u.platformTokens || {};
+      if (inputTokenGithub) inputTokenGithub.value = pt.github || '';
+      if (inputTokenCf) inputTokenCf.value = pt.cloudflare || '';
+      const custom = {};
+      for (const k of Object.keys(pt)) {
+        if (k !== 'github' && k !== 'cloudflare') custom[k] = pt[k];
+      }
+      if (inputTokensCustom) inputTokensCustom.value = Object.keys(custom).length > 0 ? JSON.stringify(custom) : '';
+
       inputRoles.value = (u.roles || []).join(', ');
       checkPasskey.checked = !!u.passkeyBound;
       checkStatus.checked = (u.status === 'active');
@@ -634,6 +671,9 @@
       inputDisplay.value = '';
       inputPwd.value = '';
       inputPwd.placeholder = '请输入用户登录密码';
+      if (inputTokenGithub) inputTokenGithub.value = '';
+      if (inputTokenCf) inputTokenCf.value = '';
+      if (inputTokensCustom) inputTokensCustom.value = '';
       inputRoles.value = 'admin, author';
       checkPasskey.checked = true;
       checkStatus.checked = true;
@@ -655,6 +695,9 @@
     const email = document.getElementById('edit-user-email').value.trim();
     const displayName = document.getElementById('edit-user-displayname').value.trim();
     const password = document.getElementById('edit-user-password').value.trim();
+    const githubToken = document.getElementById('edit-user-token-github') ? document.getElementById('edit-user-token-github').value.trim() : '';
+    const cfToken = document.getElementById('edit-user-token-cloudflare') ? document.getElementById('edit-user-token-cloudflare').value.trim() : '';
+    const customTokensStr = document.getElementById('edit-user-tokens-custom') ? document.getElementById('edit-user-tokens-custom').value.trim() : '';
     const rolesStr = document.getElementById('edit-user-roles').value.trim();
     const passkeyBound = document.getElementById('edit-user-passkey').checked;
     const status = document.getElementById('edit-user-status').checked ? 'active' : 'suspended';
@@ -667,6 +710,22 @@
       alert('创建新用户必须设置密码！');
       return;
     }
+
+    let customTokens = {};
+    if (customTokensStr) {
+      try {
+        customTokens = JSON.parse(customTokensStr);
+        if (typeof customTokens !== 'object' || Array.isArray(customTokens)) {
+          throw new Error();
+        }
+      } catch (e) {
+        alert('其他平台 Token 必须是合法的 JSON 键值对对象格式，例如 {"openai": "sk-xxx"}！');
+        return;
+      }
+    }
+    const platformTokens = { ...customTokens };
+    if (githubToken) platformTokens.github = githubToken;
+    if (cfToken) platformTokens.cloudflare = cfToken;
 
     let passwordHash = null;
     if (password) {
@@ -685,6 +744,7 @@
         u.displayName = displayName;
         if (passwordHash) u.passwordHash = passwordHash;
         delete u.password;
+        u.platformTokens = platformTokens;
         u.roles = roles;
         u.passkeyBound = passkeyBound;
         u.status = status;
@@ -704,6 +764,7 @@
         email,
         displayName: displayName || username,
         passwordHash: passwordHash || '9ad2e009ad4a427344544c65f743b3bf05b3092774058b77bc9c824f6e554001',
+        platformTokens,
         roles,
         passkeyBound,
         status,
@@ -718,7 +779,7 @@
     renderOverview();
     const res = await pushRemoteConfig();
     if (res && res.savedToKv) {
-      showToast(`✅ 用户 "${username}" 凭证与状态已同步至 Cloudflare KV！`, 'success');
+      showToast(`✅ 用户 "${username}" 凭证与平台 Token 已同步至 Cloudflare KV！`, 'success');
     } else {
       showToast(`用户 "${username}" 凭证已更新`, 'primary');
     }

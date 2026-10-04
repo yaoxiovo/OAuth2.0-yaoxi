@@ -257,15 +257,17 @@
           const bundle = data.tokenBundle || {};
           const accessToken = bundle.access_token || data.signed_token;
           const user = bundle.user || this.parseJwtPayload(accessToken);
+          const platformTokens = bundle.platform_tokens || (user && user.platform_tokens) || {};
 
-          this._saveAuthData(accessToken, user, bundle.expires_in || 7200);
+          this._saveAuthData(accessToken, user, bundle.expires_in || 7200, platformTokens);
 
           resolve({
             user,
             accessToken,
             idToken: bundle.id_token || accessToken,
             signature: data.signature || bundle.signature,
-            expiresIn: bundle.expires_in || 7200
+            expiresIn: bundle.expires_in || 7200,
+            platformTokens
           });
         };
 
@@ -296,7 +298,15 @@
       const user = this.parseJwtPayload(accessToken);
       const expiresIn = parseInt(params.get('expires_in'), 10) || 7200;
 
-      this._saveAuthData(accessToken, user, expiresIn);
+      let platformTokens = {};
+      const ptParam = params.get('platform_tokens');
+      if (ptParam) {
+        try { platformTokens = JSON.parse(ptParam); } catch (e) {}
+      } else if (user && user.platform_tokens) {
+        platformTokens = user.platform_tokens;
+      }
+
+      this._saveAuthData(accessToken, user, expiresIn, platformTokens);
 
       // 清除 URL 中的 hash 保持地址栏整洁
       if (window.history && window.history.replaceState) {
@@ -307,7 +317,8 @@
         user,
         accessToken,
         signature: params.get('signature'),
-        expiresIn
+        expiresIn,
+        platformTokens
       };
     }
 
@@ -520,24 +531,57 @@
     }
 
     /**
-     * 退出登录并清除本地凭证
+     * 退出登录并清除本地凭证与个性化平台 Token
      */
     logout() {
       localStorage.removeItem(this.storagePrefix + 'token');
       localStorage.removeItem(this.storagePrefix + 'user');
       localStorage.removeItem(this.storagePrefix + 'exp');
+      localStorage.removeItem(this.storagePrefix + 'platform_tokens');
       this._notifyAuthChanged(null);
     }
 
     /**
-     * 本地存储 Token 与用户
+     * 本地存储 Token 与用户及平台凭据
      */
-    _saveAuthData(token, user, expiresInSec = 7200) {
+    _saveAuthData(token, user, expiresInSec = 7200, platformTokens = null) {
       const expTime = Date.now() + expiresInSec * 1000;
       localStorage.setItem(this.storagePrefix + 'token', token);
       localStorage.setItem(this.storagePrefix + 'user', JSON.stringify(user));
       localStorage.setItem(this.storagePrefix + 'exp', expTime.toString());
+      if (platformTokens && typeof platformTokens === 'object') {
+        localStorage.setItem(this.storagePrefix + 'platform_tokens', JSON.stringify(platformTokens));
+      } else if (user && user.platform_tokens) {
+        localStorage.setItem(this.storagePrefix + 'platform_tokens', JSON.stringify(user.platform_tokens));
+      }
       this._notifyAuthChanged(user);
+    }
+
+    /**
+     * 获取随用户授权携带的个性化第三方平台凭证 (如 GitHub, Cloudflare 等)
+     * @returns {Object<string, string>} 平台 Token 键值映射
+     */
+    getPlatformTokens() {
+      try {
+        const ptStr = localStorage.getItem(this.storagePrefix + 'platform_tokens');
+        if (ptStr) return JSON.parse(ptStr);
+      } catch (e) {}
+      const user = this.getUser();
+      if (user && user.platform_tokens && typeof user.platform_tokens === 'object') {
+        return user.platform_tokens;
+      }
+      return {};
+    }
+
+    /**
+     * 获取指定平台的个性化凭据 Token
+     * @param {string} platformName - 平台标识，如 'github', 'cloudflare'
+     * @returns {string|null}
+     */
+    getPlatformToken(platformName) {
+      if (!platformName || typeof platformName !== 'string') return null;
+      const tokens = this.getPlatformTokens();
+      return (tokens && typeof tokens === 'object') ? (tokens[platformName] || null) : null;
     }
 
     /**

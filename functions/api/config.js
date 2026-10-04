@@ -47,6 +47,10 @@ const DEFAULT_CONFIG = {
       roles: ["admin", "author", "super_user"],
       status: "active",
       passkeyBound: true,
+      platformTokens: {
+        github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
+        cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
+      },
       lastLogin: new Date().toISOString()
     }
   ],
@@ -98,6 +102,7 @@ function sanitizePublicConfig(rawConfig) {
       delete safeUser.password;
       delete safeUser.passwordHash;
       delete safeUser.salt;
+      delete safeUser.platformTokens;
       return safeUser;
     });
   }
