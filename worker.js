@@ -419,7 +419,7 @@ async function checkRateLimit(request, env, scope, perHourLimit) {
 }
 
 // Turnstile 服务端二次校验：未配置 secretKey 时降级为“前端已通过”软校验
-async function verifyTurnstileToken(token, remoteIp, secretKey) {
+async function verifyTurnstileToken(token, remoteIp, secretKey, expectedAction) {
   if (!token || typeof token !== 'string') {
     return { ok: false, error: '请先完成人机身份验证' };
   }
@@ -434,7 +434,13 @@ async function verifyTurnstileToken(token, remoteIp, secretKey) {
       body: form
     });
     const data = await res.json().catch(() => null);
-    if (data && data.success) return { ok: true };
+    if (data && data.success) {
+      // 操作域 (Action) 校验：防止将其他场景（如登录）的人机验证令牌复用到注册接口
+      if (expectedAction && data.action && data.action !== expectedAction) {
+        return { ok: false, error: '人机验证凭证与当前操作不匹配，请刷新页面后重试' };
+      }
+      return { ok: true };
+    }
     const codes = (data && data['error-codes']) || [];
     if (codes.includes('invalid-input-secret') || codes.includes('missing-input-secret')) {
       return { ok: true, degraded: true };
@@ -500,7 +506,7 @@ async function handleRegister(request, env) {
   const turnstileCfg = (config && config.turnstile) || {};
   if (turnstileCfg.enabled !== false) {
     const secretKey = turnstileCfg.secretKey || (env && env.TURNSTILE_SECRET_KEY) || '';
-    const tsCheck = await verifyTurnstileToken(cf_turnstile_token, rate.ip, secretKey);
+    const tsCheck = await verifyTurnstileToken(cf_turnstile_token, rate.ip, secretKey, 'register');
     if (!tsCheck.ok) {
       return new Response(JSON.stringify({ success: false, error: tsCheck.error }), {
         status: 403,

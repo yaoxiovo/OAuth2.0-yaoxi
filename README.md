@@ -82,6 +82,8 @@ sequenceDiagram
 ```
 
 > 管理员可在控制台「账号与凭证 → 开放自助注册策略」随时开关自助注册入口与审核模式（关闭审核时注册即自动激活并直接完成登录握手）。
+>
+> 人机验证：注册表单内嵌独立 Cloudflare Turnstile 组件（`action=register` 操作域）；在「安全与验签」中配置 Turnstile Secret Key（或环境变量 `TURNSTILE_SECRET_KEY`）后，`/api/register` 与 `/api/lookup` 将在服务端向 Cloudflare 强制执行 siteverify 真伪校验（含操作域防复用校验）；未配置密钥时退化为令牌存在性软校验，KV IP 限流仍作为滥用硬上限兜底。
 
 ---
 

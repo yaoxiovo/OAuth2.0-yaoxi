@@ -247,6 +247,7 @@ def test_open_registration_and_privacy_hardening():
         assert "USERNAME_PATTERN" in code, f"{path} 缺少用户名服务端格式校验!"
         assert "RESERVED_USERNAMES" in code, f"{path} 缺少保留用户名保护!"
         assert "verifyTurnstileToken" in code, f"{path} 缺少 Turnstile 服务端 siteverify 二次校验!"
+        assert "expectedAction" in code, f"{path} 缺少 Turnstile 操作域 (Action) 校验!"
         assert "checkRateLimit" in code, f"{path} 缺少 KV IP 限流硬上限!"
         assert "USER_REGISTER" in code, f"{path} 缺少注册审计日志!"
         assert "requireApproval" in code, f"{path} 缺少审核模式开关!"
@@ -302,6 +303,13 @@ def test_open_registration_and_privacy_hardening():
     assert "USER_APPROVE" in admin_code, "admin.js 缺少审核通过审计日志!"
     assert "USER_REJECT" in admin_code, "admin.js 缺少拒绝注册审计日志!"
     assert "registeredVia" in admin_code, "admin.js 缺少自助注册来源标识渲染!"
+
+    # 6. 注册页 Turnstile 渲染健壮性 (cData 非法参数回归防护 + 失败可见反馈 + 防重复渲染)
+    with open(login_js, "r", encoding="utf-8") as f:
+        login_code2 = f.read()
+    assert "onRegisterTurnstileError" in login_code2, "accounts-login.js 缺少注册人机验证失败可见反馈回调!"
+    assert "childElementCount" in login_code2, "accounts-login.js 缺少 Turnstile 容器防重复渲染防护!"
+    assert "cData" not in login_code2, "accounts-login.js 仍向 turnstile.render 传入非法 cData (Turnstile 要求 base64)!"
 
     print("  ✅ 开放注册、审核流转、限流防护与用户目录隐私加固断言全部通过！")
 

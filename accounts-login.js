@@ -487,6 +487,14 @@
     isRegCfVerified = false;
   };
 
+  window.onRegisterTurnstileError = function (errorCode) {
+    const DOM = getDOM();
+    // 组件加载/校验失败时给出明确可见提示，避免用户卡在空白验证区无从下手
+    if (DOM.registerError && DOM.registerError.style.display !== 'block') {
+      showError(DOM.registerError, '人机验证未通过或组件加载失败，请刷新页面后重试');
+    }
+  };
+
   window.onTurnstileLoaded = function () {
     initCloudflareTurnstile();
     if (registerStepVisited) initRegisterTurnstile();
@@ -496,19 +504,20 @@
     const DOM = getDOM();
     const sitekey = urlParams.get('cf_sitekey') || getTurnstileSiteKey();
 
-    if (window.turnstile && DOM.cfTurnstileBox && !cfWidgetId) {
-      try {
-        cfWidgetId = window.turnstile.render(DOM.cfTurnstileBox, {
-          sitekey: sitekey,
-          theme: 'auto',
-          action: 'login',
-          cData: OAuthParams.targetDomain,
-          callback: window.onTurnstileSuccess,
-          'error-callback': window.onTurnstileError,
-          'expired-callback': window.onTurnstileExpired
-        });
-      } catch (e) {}
-    }
+    if (!window.turnstile || !DOM.cfTurnstileBox || cfWidgetId) return;
+    // HTML 中的 data-* 属性可能已触发隐式渲染，避免重复挂载同一容器
+    if (DOM.cfTurnstileBox.childElementCount > 0) return;
+
+    try {
+      cfWidgetId = window.turnstile.render(DOM.cfTurnstileBox, {
+        sitekey: sitekey,
+        theme: 'auto',
+        action: 'login',
+        callback: window.onTurnstileSuccess,
+        'error-callback': window.onTurnstileError,
+        'expired-callback': window.onTurnstileExpired
+      });
+    } catch (e) {}
   }
 
   // 注册步骤的 Turnstile 使用显式懒渲染（容器默认隐藏，进入步骤后再渲染，避免隐藏容器渲染异常）
@@ -518,18 +527,21 @@
     const cfg = getDynamicConfig();
     if (cfg && cfg.turnstile && cfg.turnstile.enabled === false) return;
 
-    if (window.turnstile && DOM.cfTurnstileRegisterBox && !cfRegisterWidgetId) {
-      try {
-        cfRegisterWidgetId = window.turnstile.render(DOM.cfTurnstileRegisterBox, {
-          sitekey: sitekey,
-          theme: 'auto',
-          action: 'register',
-          cData: OAuthParams.targetDomain,
-          callback: window.onRegisterTurnstileSuccess,
-          'error-callback': window.onTurnstileError,
-          'expired-callback': window.onRegisterTurnstileExpired
-        });
-      } catch (e) {}
+    if (!window.turnstile || !DOM.cfTurnstileRegisterBox || cfRegisterWidgetId) return;
+    if (DOM.cfTurnstileRegisterBox.childElementCount > 0) return;
+
+    try {
+      cfRegisterWidgetId = window.turnstile.render(DOM.cfTurnstileRegisterBox, {
+        sitekey: sitekey,
+        theme: 'auto',
+        action: 'register',
+        callback: window.onRegisterTurnstileSuccess,
+        'error-callback': window.onRegisterTurnstileError,
+        'expired-callback': window.onRegisterTurnstileExpired
+      });
+    } catch (e) {
+      // 渲染同步异常 (如站点密钥配置错误) 时给出可见反馈，避免注册入口静默失效
+      showError(DOM.registerError, '人机验证组件初始化失败，请刷新页面后重试');
     }
   }
 

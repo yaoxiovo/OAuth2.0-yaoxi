@@ -71,7 +71,7 @@ async function checkRateLimit(request, env, scope, perHourLimit) {
   }
 }
 
-async function verifyTurnstileToken(token, remoteIp, secretKey) {
+async function verifyTurnstileToken(token, remoteIp, secretKey, expectedAction) {
   if (!token || typeof token !== 'string') {
     return { ok: false, error: '请先完成人机身份验证' };
   }
@@ -86,7 +86,12 @@ async function verifyTurnstileToken(token, remoteIp, secretKey) {
       body: form
     });
     const data = await res.json().catch(() => null);
-    if (data && data.success) return { ok: true };
+    if (data && data.success) {
+      if (expectedAction && data.action && data.action !== expectedAction) {
+        return { ok: false, error: '人机验证凭证与当前操作不匹配，请刷新页面后重试' };
+      }
+      return { ok: true };
+    }
     const codes = (data && data['error-codes']) || [];
     if (codes.includes('invalid-input-secret') || codes.includes('missing-input-secret')) {
       return { ok: true, degraded: true };

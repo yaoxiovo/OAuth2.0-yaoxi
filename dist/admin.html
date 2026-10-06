@@ -447,7 +447,7 @@
             <div class="form-group">
               <label class="form-label">Turnstile Secret Key (服务端私钥，可选)</label>
               <input type="password" id="sec-turnstile-secretkey" class="form-input" style="font-family: var(--admin-mono);" placeholder="可选：用于边缘 Serverless 端二次校验">
-              <div class="form-hint">若填写，边缘中间件将向 Cloudflare API 校验 Token 真伪</div>
+              <div class="form-hint">若填写，注册 (/api/register)、账号解析 (/api/lookup) 等接口将在服务端向 Cloudflare API 强制执行 siteverify 真伪校验；未填写时仅做令牌存在性软校验</div>
             </div>
           </div>
         </div>
