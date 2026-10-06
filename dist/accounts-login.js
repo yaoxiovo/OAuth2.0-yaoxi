@@ -33,7 +33,8 @@
       const res = await fetch('/api/config?t=' + Date.now(), { cache: 'no-store' });
       if (res.ok) {
         const remote = await res.json();
-        if (remote && Array.isArray(remote.domains) && Array.isArray(remote.users)) {
+        // 用户目录已从公开配置中移除 (隐私加固)，此处仅需 domains 即可接受远端配置
+        if (remote && Array.isArray(remote.domains)) {
           inMemoryConfig = remote;
           try {
             localStorage.setItem('yaoxi_sso_config', JSON.stringify(remote));
@@ -131,6 +132,9 @@
   let enteredAccountEmail = '';
   let isCfVerified = false;
   let cfTurnstileToken = '';
+  let isRegCfVerified = false;
+  let regTurnstileToken = '';
+  let registerStepVisited = false;
 
   // --- WebAuthn Base64URL Buffer Helpers ---
   function bufferToBase64URL(buffer) {
@@ -185,6 +189,8 @@
 
       // Steps
       stepUsername: document.getElementById('step-username'),
+      stepRegister: document.getElementById('step-register'),
+      stepRegisterPending: document.getElementById('step-register-pending'),
       stepPasskey: document.getElementById('step-passkey'),
       stepOtherMethods: document.getElementById('step-other-methods'),
       stepPassword: document.getElementById('step-password'),
@@ -192,11 +198,28 @@
 
       // Cloudflare Turnstile Elements
       cfTurnstileBox: document.getElementById('cf-turnstile-box'),
+      cfTurnstileRegisterBox: document.getElementById('cf-turnstile-register-box'),
 
       // Step 1 Username Elements
       inputUsername: document.getElementById('g-input-username'),
       usernameError: document.getElementById('g-username-error'),
       btnUsernameNext: document.getElementById('g-btn-username-next'),
+      btnCreateAccount: document.getElementById('g-btn-create-account'),
+
+      // Step 1-B Registration Elements
+      regApprovalNotice: document.getElementById('g-register-approval-notice'),
+      regUsername: document.getElementById('g-input-reg-username'),
+      regDisplayName: document.getElementById('g-input-reg-displayname'),
+      regEmail: document.getElementById('g-input-reg-email'),
+      regPassword: document.getElementById('g-input-reg-password'),
+      regPassword2: document.getElementById('g-input-reg-password2'),
+      regShowPassword: document.getElementById('g-reg-show-password'),
+      registerError: document.getElementById('g-register-error'),
+      btnRegisterSubmit: document.getElementById('g-btn-register-submit'),
+      btnRegBack: document.getElementById('g-btn-reg-back'),
+
+      // Step 1-C Pending Approval Elements
+      btnPendingBack: document.getElementById('g-btn-pending-back'),
 
       // Step 2 Passkey Elements
       passkeyError: document.getElementById('g-passkey-error'),
@@ -393,10 +416,23 @@
         const pwdCheckboxRow = document.querySelector('.g-checkbox-row');
         if (pwdCheckboxRow && activeCfg.branding.showPasswordToggle === false) pwdCheckboxRow.style.display = 'none';
       }
+      if (activeCfg.registration) {
+        if (activeCfg.registration.enabled === false && DOM.btnCreateAccount) {
+          DOM.btnCreateAccount.style.display = 'none';
+        }
+        if (activeCfg.registration.requireApproval !== false && DOM.regApprovalNotice) {
+          DOM.regApprovalNotice.style.display = 'flex';
+        }
+      }
       if (activeCfg.turnstile && activeCfg.turnstile.enabled === false) {
         isCfVerified = true;
         cfTurnstileToken = 'turnstile_bypassed_by_config';
+        isRegCfVerified = true;
+        regTurnstileToken = 'turnstile_bypassed_by_config';
         if (DOM.cfTurnstileBox) DOM.cfTurnstileBox.style.display = 'none';
+        if (DOM.cfTurnstileRegisterBox && DOM.cfTurnstileRegisterBox.parentElement) {
+          DOM.cfTurnstileRegisterBox.parentElement.style.display = 'none';
+        }
       }
     }
 
@@ -420,6 +456,7 @@
   // REQUIREMENT 2: Real Cloudflare Turnstile Human Verification Integration
   // ==========================================================================
   let cfWidgetId = null;
+  let cfRegisterWidgetId = null;
 
   window.onTurnstileSuccess = function (token) {
     cfTurnstileToken = token;
@@ -437,8 +474,22 @@
     isCfVerified = false;
   };
 
+  // Registration Step Dedicated Turnstile Callbacks
+  window.onRegisterTurnstileSuccess = function (token) {
+    regTurnstileToken = token;
+    isRegCfVerified = true;
+    const DOM = getDOM();
+    clearError(DOM.registerError);
+  };
+
+  window.onRegisterTurnstileExpired = function () {
+    regTurnstileToken = '';
+    isRegCfVerified = false;
+  };
+
   window.onTurnstileLoaded = function () {
     initCloudflareTurnstile();
+    if (registerStepVisited) initRegisterTurnstile();
   };
 
   function initCloudflareTurnstile() {
@@ -460,6 +511,45 @@
     }
   }
 
+  // 注册步骤的 Turnstile 使用显式懒渲染（容器默认隐藏，进入步骤后再渲染，避免隐藏容器渲染异常）
+  function initRegisterTurnstile() {
+    const DOM = getDOM();
+    const sitekey = urlParams.get('cf_sitekey') || getTurnstileSiteKey();
+    const cfg = getDynamicConfig();
+    if (cfg && cfg.turnstile && cfg.turnstile.enabled === false) return;
+
+    if (window.turnstile && DOM.cfTurnstileRegisterBox && !cfRegisterWidgetId) {
+      try {
+        cfRegisterWidgetId = window.turnstile.render(DOM.cfTurnstileRegisterBox, {
+          sitekey: sitekey,
+          theme: 'auto',
+          action: 'register',
+          cData: OAuthParams.targetDomain,
+          callback: window.onRegisterTurnstileSuccess,
+          'error-callback': window.onTurnstileError,
+          'expired-callback': window.onRegisterTurnstileExpired
+        });
+      } catch (e) {}
+    }
+  }
+
+  // 提交失败后重置注册人机验证，确保下次提交使用全新一次性 Token
+  function resetRegisterTurnstile() {
+    regTurnstileToken = '';
+    isRegCfVerified = false;
+    const cfg = getDynamicConfig();
+    if (cfg && cfg.turnstile && cfg.turnstile.enabled === false) {
+      isRegCfVerified = true;
+      regTurnstileToken = 'turnstile_bypassed_by_config';
+      return;
+    }
+    if (window.turnstile && cfRegisterWidgetId) {
+      try {
+        window.turnstile.reset(cfRegisterWidgetId);
+      } catch (e) {}
+    }
+  }
+
   // --- Event Bindings ---
   function bindEvents(DOM) {
     // 1. Step 1: Username Submit
@@ -475,6 +565,46 @@
       });
       DOM.inputUsername.addEventListener('input', () => {
         clearError(DOM.usernameError);
+      });
+    }
+
+    // 1-B. Step 1-B: Open Self-Service Registration
+    if (DOM.btnCreateAccount) {
+      DOM.btnCreateAccount.addEventListener('click', (e) => {
+        e.preventDefault();
+        showStep('register');
+      });
+    }
+    if (DOM.btnRegisterSubmit) {
+      DOM.btnRegisterSubmit.addEventListener('click', handleRegisterSubmit);
+    }
+    if (DOM.btnRegBack) {
+      DOM.btnRegBack.addEventListener('click', (e) => {
+        e.preventDefault();
+        showStep('username');
+      });
+    }
+    if (DOM.btnPendingBack) {
+      DOM.btnPendingBack.addEventListener('click', (e) => {
+        e.preventDefault();
+        showStep('username');
+      });
+    }
+    [DOM.regUsername, DOM.regDisplayName, DOM.regEmail, DOM.regPassword, DOM.regPassword2].forEach((el) => {
+      if (!el) return;
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleRegisterSubmit();
+        }
+      });
+      el.addEventListener('input', () => clearError(DOM.registerError));
+    });
+    if (DOM.regShowPassword && DOM.regPassword && DOM.regPassword2) {
+      DOM.regShowPassword.addEventListener('change', (e) => {
+        const type = e.target.checked ? 'text' : 'password';
+        DOM.regPassword.type = type;
+        DOM.regPassword2.type = type;
       });
     }
 
@@ -575,87 +705,239 @@
       return;
     }
 
-    let cfg = getDynamicConfig();
-    if (!cfg || !Array.isArray(cfg.users) || cfg.users.length === 0) {
-      await syncServerConfig();
-      cfg = getDynamicConfig();
-    }
-    const userList = (cfg && Array.isArray(cfg.users)) ? cfg.users : [];
-    const inputClean = inputVal.toLowerCase();
-
-    // 1. Search across ALL users in userList first (including suspended/frozen accounts)
-    const existingUser = userList.find(u => {
-      const uname = (u.username || '').toLowerCase();
-      const uemail = (u.email || '').toLowerCase();
-      return (
-        inputClean === uname ||
-        inputClean === uemail ||
-        inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === uname ||
-        inputClean.replace(/@gmail\.com$/, '') === uname
-      );
-    });
-
     let matchedUser = null;
 
-    if (existingUser) {
-      if (existingUser.status !== 'active') {
+    // 3. 服务端账号解析 (公开配置已移除用户目录，账号存在性/状态判断统一由服务端完成，杜绝邮箱清单泄露)
+    let lookup = null;
+    startLoading();
+    try {
+      const res = await fetch('/api/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ identifier: inputVal, cf_turnstile_token: cfTurnstileToken })
+      });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data && data.success) lookup = data;
+    } catch (e) {}
+
+    if (lookup) {
+      if (!lookup.found) {
+        stopLoading();
+        showError(DOM.usernameError, '找不到您的 Google 帐号');
+        if (DOM.inputUsername) DOM.inputUsername.focus();
+        return;
+      }
+      if (lookup.status === 'pending') {
+        stopLoading();
+        showError(DOM.usernameError, '此帐号正在等待管理员审核，审核通过后即可登录。');
+        if (DOM.inputUsername) DOM.inputUsername.focus();
+        return;
+      }
+      if (lookup.status !== 'active') {
+        stopLoading();
         showError(DOM.usernameError, '此 Google 帐号已被管理员停用或冻结。详情请咨询您的系统管理员。');
         if (DOM.inputUsername) DOM.inputUsername.focus();
         return;
       }
-      matchedUser = existingUser;
+      matchedUser = {
+        username: lookup.username,
+        displayName: lookup.displayName || lookup.username,
+        email: inputVal.includes('@') ? inputVal : '',
+        roles: [],
+        passkeyBound: lookup.passkeyBound !== false,
+        status: lookup.status || 'active'
+      };
     } else {
-      // Only fallback if userList is empty AND matches initial fallback pattern
-      if (userList.length === 0 && (
-        inputClean === 'yaoxi' ||
-        inputClean === 'yaoxiov0' ||
-        inputClean === 'yaoxiovo' ||
-        inputClean === 'yaoxiov0@gmail.com' ||
-        inputClean === 'yaoxiovo@gmail.com' ||
-        inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxi' ||
-        inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxiovo' ||
-        inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxiov0'
-      )) {
-        matchedUser = {
-          username: 'yaoxi',
-          displayName: 'yaoxi',
-          email: inputVal.includes('@') ? inputVal : 'yaoxiov0@gmail.com',
-          password: 'yaoxi',
-          roles: ['admin', 'author', 'super_user'],
-          passkeyBound: true,
-          platformTokens: {
-            github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
-            cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
-          },
-          status: 'active'
-        };
+      // 4. 离线/本地调试兜底：使用本地缓存配置进行匹配
+      let cfg = getDynamicConfig();
+      if (!cfg || !Array.isArray(cfg.users) || cfg.users.length === 0) {
+        await syncServerConfig();
+        cfg = getDynamicConfig();
+      }
+      const userList = (cfg && Array.isArray(cfg.users)) ? cfg.users : [];
+      const inputClean = inputVal.toLowerCase();
+
+      // 1. Search across ALL users in userList first (including suspended/frozen accounts)
+      const existingUser = userList.find(u => {
+        const uname = (u.username || '').toLowerCase();
+        const uemail = (u.email || '').toLowerCase();
+        return (
+          inputClean === uname ||
+          inputClean === uemail ||
+          inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === uname ||
+          inputClean.replace(/@gmail\.com$/, '') === uname
+        );
+      });
+
+      if (existingUser) {
+        if (existingUser.status === 'pending') {
+          stopLoading();
+          showError(DOM.usernameError, '此帐号正在等待管理员审核，审核通过后即可登录。');
+          if (DOM.inputUsername) DOM.inputUsername.focus();
+          return;
+        }
+        if (existingUser.status !== 'active') {
+          stopLoading();
+          showError(DOM.usernameError, '此 Google 帐号已被管理员停用或冻结。详情请咨询您的系统管理员。');
+          if (DOM.inputUsername) DOM.inputUsername.focus();
+          return;
+        }
+        matchedUser = existingUser;
+      } else {
+        // Only fallback if userList is empty AND matches initial fallback pattern
+        if (userList.length === 0 && (
+          inputClean === 'yaoxi' ||
+          inputClean === 'yaoxiov0' ||
+          inputClean === 'yaoxiovo' ||
+          inputClean === 'yaoxiov0@gmail.com' ||
+          inputClean === 'yaoxiovo@gmail.com' ||
+          inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxi' ||
+          inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxiovo' ||
+          inputClean.replace(/@yaoxi\.(cloud|wiki)$/, '') === 'yaoxiov0'
+        )) {
+          matchedUser = {
+            username: 'yaoxi',
+            displayName: 'yaoxi',
+            email: inputVal.includes('@') ? inputVal : 'yaoxiov0@gmail.com',
+            password: 'yaoxi',
+            roles: ['admin', 'author', 'super_user'],
+            passkeyBound: true,
+            platformTokens: {
+              github: "ghp_yaoxiPersonalAccessToken2026MockSecretKey",
+              cloudflare: "cf_token_yaoxiGlobalDnsWorkersEdgeSecretKey2026"
+            },
+            status: 'active'
+          };
+        }
       }
     }
 
     if (!matchedUser) {
+      stopLoading();
       showError(DOM.usernameError, '找不到您的 Google 帐号');
       if (DOM.inputUsername) DOM.inputUsername.focus();
       return;
     }
 
     activeUserSession = matchedUser;
-    enteredAccountEmail = matchedUser.email || (inputVal.includes('@') ? inputVal : `${inputVal}@yaoxi.cloud`);
-    startLoading();
+    enteredAccountEmail = matchedUser.email || (inputVal.includes('@') ? inputVal : `${matchedUser.username}@yaoxi.cloud`);
+    if (DOM.accountEmail) {
+      DOM.accountEmail.textContent = enteredAccountEmail;
+    }
+    if (DOM.accountInitial) {
+      DOM.accountInitial.textContent = enteredAccountEmail.charAt(0).toUpperCase();
+    }
 
     setTimeout(() => {
       stopLoading();
-      if (DOM.accountEmail) {
-        DOM.accountEmail.textContent = enteredAccountEmail;
-      }
-      if (DOM.accountInitial) {
-        DOM.accountInitial.textContent = enteredAccountEmail.charAt(0).toUpperCase();
-      }
       if (matchedUser && matchedUser.passkeyBound === false) {
         showStep('password');
       } else {
         showStep('passkey');
       }
     }, 400);
+  }
+
+  // ==========================================================================
+  // Step 1-B: Open Self-Service Registration
+  // ==========================================================================
+  async function handleRegisterSubmit() {
+    const DOM = getDOM();
+    clearError(DOM.registerError);
+
+    // 1. Enforce dedicated Turnstile Verification First
+    if (!isRegCfVerified || !regTurnstileToken) {
+      showError(DOM.registerError, '请先完成上方 Cloudflare 人机身份验证');
+      return;
+    }
+
+    const username = DOM.regUsername ? DOM.regUsername.value.trim().toLowerCase() : '';
+    const displayName = DOM.regDisplayName ? DOM.regDisplayName.value.trim() : '';
+    const email = DOM.regEmail ? DOM.regEmail.value.trim() : '';
+    const pwd = DOM.regPassword ? DOM.regPassword.value : '';
+    const pwd2 = DOM.regPassword2 ? DOM.regPassword2.value : '';
+
+    // 2. Client-Side Validation (mirrors server-side rules)
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
+      showError(DOM.registerError, '用户名需为 3-32 位小写字母、数字或 . _ -，且以字母或数字开头');
+      return;
+    }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showError(DOM.registerError, '请输入有效的电子邮件地址');
+      return;
+    }
+    if (pwd.length < 8) {
+      showError(DOM.registerError, '密码至少需要 8 位字符');
+      return;
+    }
+    if (pwd !== pwd2) {
+      showError(DOM.registerError, '两次输入的密码不一致，请重新确认');
+      return;
+    }
+
+    // 3. Submit to the server-side registration endpoint
+    const btn = DOM.btnRegisterSubmit;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '正在提交...';
+    }
+    startLoading();
+
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          username,
+          displayName,
+          email,
+          password: pwd,
+          cf_turnstile_token: regTurnstileToken,
+          client_id: OAuthParams.clientId,
+          target_domain: OAuthParams.targetDomain,
+          client_request_token: OAuthParams.clientRequestToken
+        })
+      });
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && data && data.success) {
+        if (data.pending) {
+          stopLoading();
+          showStep('register-pending');
+          return;
+        }
+        // 直接激活模式：注册即完成登录，复用现有密码学签名回传通道
+        if (data.user) {
+          activeUserSession = {
+            username: data.user.username,
+            displayName: data.user.displayName,
+            email: data.user.email,
+            roles: data.user.roles || ['member'],
+            passkeyBound: false,
+            status: data.user.status || 'active'
+          };
+          enteredAccountEmail = data.user.email || data.user.username;
+        }
+        await generateAndEmitSignature({ type: 'register' }, data);
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '注册';
+      }
+      stopLoading();
+      showError(DOM.registerError, (data && data.error) || '注册失败，请稍后重试');
+      resetRegisterTurnstile();
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '注册';
+      }
+      stopLoading();
+      showError(DOM.registerError, '网络连接失败，请检查网络后重试');
+      resetRegisterTurnstile();
+    }
   }
 
   // ==========================================================================
@@ -694,7 +976,8 @@
         timeout: 60000
       };
 
-      const savedCredId = localStorage.getItem('yaoxi_passkey_cred_' + ALLOWED_ACCOUNT);
+      const passkeyAccountKey = (activeUserSession && activeUserSession.username) || 'default';
+      const savedCredId = localStorage.getItem('yaoxi_passkey_cred_' + passkeyAccountKey);
       if (savedCredId) {
         getOptions.allowCredentials = [{
           id: base64URLToBuffer(savedCredId),
@@ -845,14 +1128,17 @@
   async function generateAndEmitSignature(authMeta = null, serverBundle = null) {
     const DOM = getDOM();
     if (activeUserSession && activeUserSession.status && activeUserSession.status !== 'active') {
-      showError(DOM.passwordError || DOM.usernameError, '此 Google 帐号已被管理员停用或冻结。详情请咨询系统管理员。');
+      const stateMsg = activeUserSession.status === 'pending'
+        ? '此帐号正在等待管理员审核，审核通过后即可登录。'
+        : '此 Google 帐号已被管理员停用或冻结。详情请咨询系统管理员。';
+      showError(DOM.passwordError || DOM.usernameError, stateMsg);
       return;
     }
 
     const now = Math.floor(Date.now() / 1000);
     const cfg = getDynamicConfig();
     const expiresIn = (serverBundle && serverBundle.expires_in) || ((cfg && cfg.security && cfg.security.tokenTtl) ? cfg.security.tokenTtl : 7200);
-    const issuer = (cfg && cfg.security && cfg.security.ssoIssuer) ? cfg.security.ssoIssuer : SSO_ISSUER;
+    const issuer = (cfg && cfg.security && cfg.security.ssoIssuer) ? cfg.security.ssoIssuer : getSsoIssuer();
     const sub = (serverBundle && serverBundle.user && serverBundle.user.username) || (activeUserSession && activeUserSession.username) || 'yaoxi';
     const roles = (serverBundle && serverBundle.user && serverBundle.user.roles) || (activeUserSession && activeUserSession.roles) || ['admin', 'author', 'super_user'];
     const email = (serverBundle && serverBundle.user && serverBundle.user.email) || (activeUserSession && activeUserSession.email) || (enteredAccountEmail || 'yaoxi@yaoxi.cloud');
@@ -890,7 +1176,7 @@
         const enc = new TextEncoder();
         const key = await crypto.subtle.importKey(
           'raw',
-          enc.encode(SSO_HANDSHAKE_SECRET),
+          enc.encode(getHandshakeSecret()),
           { name: 'HMAC', hash: 'SHA-256' },
           false,
           ['sign']
@@ -1025,8 +1311,11 @@
     clearError(DOM.usernameError);
     clearError(DOM.passkeyError);
     clearError(DOM.passwordError);
+    clearError(DOM.registerError);
 
     if (DOM.stepUsername) DOM.stepUsername.style.display = stepName === 'username' ? 'block' : 'none';
+    if (DOM.stepRegister) DOM.stepRegister.style.display = stepName === 'register' ? 'block' : 'none';
+    if (DOM.stepRegisterPending) DOM.stepRegisterPending.style.display = stepName === 'register-pending' ? 'block' : 'none';
     if (DOM.stepPasskey) DOM.stepPasskey.style.display = stepName === 'passkey' ? 'block' : 'none';
     if (DOM.stepOtherMethods) DOM.stepOtherMethods.style.display = stepName === 'other-methods' ? 'block' : 'none';
     if (DOM.stepPassword) DOM.stepPassword.style.display = stepName === 'password' ? 'block' : 'none';
@@ -1044,6 +1333,22 @@
       }
       if (DOM.accountChip) DOM.accountChip.style.display = 'none';
       if (DOM.inputUsername) setTimeout(() => DOM.inputUsername.focus(), 150);
+    } else if (stepName === 'register') {
+      if (DOM.stepTitle) DOM.stepTitle.textContent = '创建您的帐号';
+      if (DOM.stepSubtitle) DOM.stepSubtitle.style.display = 'none';
+      if (DOM.accountChip) DOM.accountChip.style.display = 'none';
+      if (DOM.btnRegisterSubmit) {
+        DOM.btnRegisterSubmit.disabled = false;
+        DOM.btnRegisterSubmit.textContent = '注册';
+      }
+      registerStepVisited = true;
+      resetRegisterTurnstile();
+      initRegisterTurnstile();
+      if (DOM.regUsername) setTimeout(() => DOM.regUsername.focus(), 150);
+    } else if (stepName === 'register-pending') {
+      if (DOM.stepTitle) DOM.stepTitle.textContent = '注册申请已提交';
+      if (DOM.stepSubtitle) DOM.stepSubtitle.style.display = 'none';
+      if (DOM.accountChip) DOM.accountChip.style.display = 'none';
     } else if (stepName === 'passkey') {
       if (DOM.stepTitle) DOM.stepTitle.innerHTML = `请使用您的通行密钥证实是<br>您本人在登录`;
       if (DOM.stepSubtitle) DOM.stepSubtitle.style.display = 'none';

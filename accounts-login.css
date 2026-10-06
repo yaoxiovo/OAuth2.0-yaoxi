@@ -706,6 +706,30 @@ body {
   color: var(--g-text-secondary);
 }
 
+/* Registration Submitted Success Icon */
+.g-success-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(52, 168, 83, 0.12);
+  color: #34a853;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+
+[data-theme="dark"] .g-success-icon {
+  background: rgba(110, 219, 137, 0.15);
+  color: #6edb89;
+}
+
+.g-success-actions {
+  margin-top: 28px;
+}
+
 /* ==========================================================================
    Footer (Outside Card, Aligned with Card Width 1040px)
    ========================================================================== */

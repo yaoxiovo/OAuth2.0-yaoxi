@@ -230,6 +230,12 @@ const DEFAULT_CONFIG = {
     enabled: true,
     siteKey: "0x4AAAAAAEXamT3iIRWjGCmk"
   },
+  registration: {
+    enabled: true,
+    requireApproval: true,
+    defaultRoles: ["member"],
+    rateLimit: { perIpHour: 5, perIpDay: 20 }
+  },
   branding: {
     systemTitle: "Google 帐号 - 统一身份认证",
     welcomeTitle: "欢迎",
@@ -297,16 +303,8 @@ function sanitizePublicConfig(rawConfig) {
   if (!rawConfig || typeof rawConfig !== 'object') return {};
   const clone = JSON.parse(JSON.stringify(rawConfig));
 
-  if (Array.isArray(clone.users)) {
-    clone.users = clone.users.map(u => {
-      const safeUser = { ...u };
-      delete safeUser.password;
-      delete safeUser.passwordHash;
-      delete safeUser.salt;
-      delete safeUser.platformTokens;
-      return safeUser;
-    });
-  }
+  // 用户目录隐私加固：公开配置绝不下发任何账号清单 (含邮箱)，账号解析统一走 /api/lookup
+  delete clone.users;
 
   if (clone.security) {
     delete clone.security.handshakeSecret;
@@ -352,6 +350,326 @@ async function verifyAdminAuth(request, env, config) {
   }
 
   return false;
+}
+
+// ============================================================================
+// 开放注册 (Open Registration) 与账号解析 (Account Lookup) 支撑
+// ============================================================================
+
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+const EMAIL_PATTERN = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const RESERVED_USERNAMES = new Set([
+  'yaoxi', 'admin', 'administrator', 'root', 'system', 'support',
+  'help', 'security', 'accounts', 'official', 'service', 'api'
+]);
+
+function randomHex(byteLength = 6) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function maskEmail(email) {
+  const str = typeof email === 'string' ? email : '';
+  const atIdx = str.indexOf('@');
+  if (atIdx <= 0) return str ? str.slice(0, 2) + '***' : '';
+  const local = str.slice(0, atIdx);
+  const domain = str.slice(atIdx);
+  const head = local.slice(0, Math.min(2, local.length));
+  return `${head}***${domain}`;
+}
+
+function getClientIp(request) {
+  const cfIp = request.headers.get('CF-Connecting-IP');
+  if (cfIp) return cfIp.trim();
+  const fwd = request.headers.get('X-Forwarded-For') || '';
+  const first = fwd.split(',')[0].trim();
+  return first || 'unknown';
+}
+
+async function loadStoredConfig(env) {
+  if (env && env.SSO_CONFIG_KV) {
+    try {
+      const data = await env.SSO_CONFIG_KV.get('sso_global_config');
+      if (data) return JSON.parse(data);
+    } catch (e) {}
+  }
+  return DEFAULT_CONFIG;
+}
+
+async function bumpKvCounter(env, key, ttlSeconds) {
+  const raw = await env.SSO_CONFIG_KV.get(key);
+  const count = raw ? (parseInt(raw, 10) || 0) : 0;
+  const next = count + 1;
+  await env.SSO_CONFIG_KV.put(key, String(next), { expirationTtl: ttlSeconds });
+  return next;
+}
+
+// 固定窗口简易限流 (KV 最终一致，作为 Turnstile 之外的滥用硬上限)
+async function checkRateLimit(request, env, scope, perHourLimit) {
+  if (!env || !env.SSO_CONFIG_KV) return { allowed: true };
+  const ip = getClientIp(request);
+  if (!ip || ip === 'unknown') return { allowed: true };
+  try {
+    const next = await bumpKvCounter(env, `${scope}_rl_${ip}`, 3600);
+    return { allowed: next <= perHourLimit, next, ip };
+  } catch (e) {
+    return { allowed: true, ip };
+  }
+}
+
+// Turnstile 服务端二次校验：未配置 secretKey 时降级为“前端已通过”软校验
+async function verifyTurnstileToken(token, remoteIp, secretKey) {
+  if (!token || typeof token !== 'string') {
+    return { ok: false, error: '请先完成人机身份验证' };
+  }
+  if (!secretKey) return { ok: true, skipped: true };
+  try {
+    const form = new URLSearchParams();
+    form.append('secret', secretKey);
+    form.append('response', token);
+    if (remoteIp && remoteIp !== 'unknown') form.append('remoteip', remoteIp);
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: form
+    });
+    const data = await res.json().catch(() => null);
+    if (data && data.success) return { ok: true };
+    const codes = (data && data['error-codes']) || [];
+    if (codes.includes('invalid-input-secret') || codes.includes('missing-input-secret')) {
+      return { ok: true, degraded: true };
+    }
+    return { ok: false, error: '人机身份验证未通过，请刷新页面后重试' };
+  } catch (e) {
+    // 校验服务网络异常时不阻断注册主流程，KV 限流仍作为滥用硬上限兜底
+    return { ok: true, degraded: true };
+  }
+}
+
+async function handleRegister(request, env) {
+  const body = await request.json().catch(() => null);
+  const { username, email, displayName, password, cf_turnstile_token, client_id, target_domain, client_request_token } = body || {};
+
+  const config = await loadStoredConfig(env);
+  const registration = (config && config.registration) || {};
+  if (registration.enabled === false) {
+    return new Response(JSON.stringify({ success: false, error: '当前未开放自助注册，请联系管理员开通账号' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const limits = registration.rateLimit || {};
+  const rate = await checkRateLimit(request, env, 'reg', limits.perIpHour || 5);
+  if (!rate.allowed) {
+    return new Response(JSON.stringify({ success: false, error: '注册请求过于频繁，请稍后再试' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const usernameClean = typeof username === 'string' ? username.trim().toLowerCase() : '';
+  const emailClean = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const displayClean = typeof displayName === 'string' ? displayName.trim().replace(/[<>]/g, '').slice(0, 64) : '';
+
+  if (!USERNAME_PATTERN.test(usernameClean)) {
+    return new Response(JSON.stringify({ success: false, error: '用户名需为 3-32 位小写字母、数字或 . _ -，且以字母或数字开头' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+  if (RESERVED_USERNAMES.has(usernameClean)) {
+    return new Response(JSON.stringify({ success: false, error: '该用户名为系统保留名称，请更换一个' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+  if (!EMAIL_PATTERN.test(emailClean) || emailClean.length > 254) {
+    return new Response(JSON.stringify({ success: false, error: '请输入有效的电子邮件地址' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+  if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+    return new Response(JSON.stringify({ success: false, error: '密码需为 8-128 位字符' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const turnstileCfg = (config && config.turnstile) || {};
+  if (turnstileCfg.enabled !== false) {
+    const secretKey = turnstileCfg.secretKey || (env && env.TURNSTILE_SECRET_KEY) || '';
+    const tsCheck = await verifyTurnstileToken(cf_turnstile_token, rate.ip, secretKey);
+    if (!tsCheck.ok) {
+      return new Response(JSON.stringify({ success: false, error: tsCheck.error }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+  }
+
+  const users = Array.isArray(config.users) ? config.users : [];
+  if (users.some(u => (u.username || '').toLowerCase() === usernameClean)) {
+    return new Response(JSON.stringify({ success: false, error: '该用户名已被占用，请更换一个' }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+  if (users.some(u => (u.email || '').toLowerCase() === emailClean)) {
+    return new Response(JSON.stringify({ success: false, error: '该邮箱已被注册，请直接登录或更换邮箱' }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const requireApproval = registration.requireApproval !== false;
+  const defaultRoles = (Array.isArray(registration.defaultRoles) && registration.defaultRoles.length > 0)
+    ? registration.defaultRoles
+    : ['member'];
+
+  const newUser = {
+    id: 'usr_' + randomHex(6),
+    username: usernameClean,
+    displayName: displayClean || usernameClean,
+    email: emailClean,
+    passwordHash: await sha256Hex(password),
+    roles: defaultRoles,
+    status: requireApproval ? 'pending' : 'active',
+    passkeyBound: false,
+    platformTokens: {},
+    registeredVia: 'self_registration',
+    createdAt: new Date().toISOString(),
+    lastLogin: '-'
+  };
+
+  const nextConfig = JSON.parse(JSON.stringify(config));
+  nextConfig.users = [...users, newUser];
+  if (!Array.isArray(nextConfig.auditLogs)) nextConfig.auditLogs = [];
+  nextConfig.auditLogs.unshift({
+    id: 'log_' + Date.now().toString(36) + randomHex(2),
+    timestamp: new Date().toISOString(),
+    action: 'USER_REGISTER',
+    operator: 'guest',
+    details: `自助注册账号: ${usernameClean} (${emailClean}) · ${requireApproval ? '等待管理员审核' : '已直接激活'}`,
+    ip: rate.ip || 'unknown'
+  });
+  if (nextConfig.auditLogs.length > 200) nextConfig.auditLogs.length = 200;
+  nextConfig.lastUpdated = new Date().toISOString();
+
+  if (env && env.SSO_CONFIG_KV) {
+    await env.SSO_CONFIG_KV.put('sso_global_config', JSON.stringify(nextConfig));
+  }
+
+  const safeUser = {
+    id: newUser.id,
+    username: newUser.username,
+    displayName: newUser.displayName,
+    email: newUser.email,
+    roles: newUser.roles,
+    status: newUser.status
+  };
+
+  if (requireApproval) {
+    return new Response(JSON.stringify({ success: true, pending: true, user: safeUser }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  // 直接激活模式：注册即完成登录握手，签发与服务端登录一致的 JWT
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = (config.security && config.security.tokenTtl) || 7200;
+  const issuer = (config.security && config.security.ssoIssuer) || 'https://accounts.yaoxi.cloud';
+  const secret = (env && env.JWT_SECRET) || SERVER_JWT_SECRET;
+
+  const payload = {
+    iss: issuer,
+    aud: client_id || 'yaoxi-app',
+    sub: newUser.username,
+    email: newUser.email,
+    roles: newUser.roles,
+    target_domain: target_domain || 'yaoxi.cloud',
+    client_request_token: client_request_token || '',
+    platform_tokens: {},
+    amr: ['pwd'],
+    auth_time: now,
+    iat: now,
+    exp: now + ttl
+  };
+
+  const token = await signJwtToken(payload, secret);
+
+  return new Response(JSON.stringify({
+    success: true,
+    pending: false,
+    token,
+    expires_in: ttl,
+    user: safeUser
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+  });
+}
+
+async function handleLookup(request, env) {
+  const body = await request.json().catch(() => null);
+  const { identifier, cf_turnstile_token } = body || {};
+
+  if (!identifier || typeof identifier !== 'string' || !identifier.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'Missing identifier' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const rate = await checkRateLimit(request, env, 'lookup', 60);
+  if (!rate.allowed) {
+    return new Response(JSON.stringify({ success: false, error: '请求过于频繁，请稍后再试' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  const config = await loadStoredConfig(env);
+  const turnstileCfg = (config && config.turnstile) || {};
+  if (turnstileCfg.enabled !== false) {
+    const secretKey = turnstileCfg.secretKey || (env && env.TURNSTILE_SECRET_KEY) || '';
+    const tsCheck = await verifyTurnstileToken(cf_turnstile_token, rate.ip, secretKey);
+    if (!tsCheck.ok) {
+      return new Response(JSON.stringify({ success: false, error: tsCheck.error }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+  }
+
+  const input = identifier.trim().toLowerCase();
+  const users = Array.isArray(config.users) ? config.users : [];
+  const matched = users.find(u =>
+    (u.username && u.username.toLowerCase() === input) ||
+    (u.email && u.email.toLowerCase() === input)
+  );
+
+  if (!matched) {
+    return new Response(JSON.stringify({ success: true, found: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
+    });
+  }
+
+  return new Response(JSON.stringify({
+    success: true,
+    found: true,
+    username: matched.username,
+    displayName: matched.displayName || matched.username,
+    passkeyBound: matched.passkeyBound !== false,
+    status: matched.status || 'active',
+    emailMasked: maskEmail(matched.email)
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
+  });
 }
 
 export default {
@@ -402,6 +720,13 @@ export default {
           if (!matchedUser) {
             return new Response(JSON.stringify({ success: false, error: '找不到该 Google 帐号' }), {
               status: 401,
+              headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+            });
+          }
+
+          if (matchedUser.status === 'pending') {
+            return new Response(JSON.stringify({ success: false, error: '此帐号正在等待管理员审核，审核通过后即可登录' }), {
+              status: 403,
               headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
             });
           }
@@ -484,7 +809,35 @@ export default {
       }
     }
 
-    // 2. API 接口: /api/status (轻量级账号实时状态查询与即时吊销检测)
+    // 2. API 接口: /api/register (开放自助注册：人机校验 + 限流 + 查重 + 待审核入库)
+    if (pathname === '/api/register' || pathname === '/api/lookup') {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        });
+      }
+      if (request.method === 'POST') {
+        try {
+          return await (pathname === '/api/register' ? handleRegister(request, env) : handleLookup(request, env));
+        } catch (err) {
+          return new Response(JSON.stringify({ success: false, error: err.message }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+          });
+        }
+      }
+      return new Response(JSON.stringify({ success: false, error: 'Method Not Allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
+    // 3. API 接口: /api/status (轻量级账号实时状态查询与即时吊销检测)
     if (pathname === '/api/status') {
       const corsHeaders = {
         'Content-Type': 'application/json; charset=utf-8',
@@ -570,7 +923,7 @@ export default {
       }), { status: 200, headers: corsHeaders });
     }
 
-    // 3. API 接口: /api/config (严格数据脱敏与管理员门禁鉴权)
+    // 4. API 接口: /api/config (严格数据脱敏与管理员门禁鉴权)
     if (pathname === '/api/config') {
       if (request.method === 'GET') {
         let config = null;
@@ -682,7 +1035,7 @@ export default {
       }
     }
 
-    // 3. 放行静态资源文件、管理后台 (admin.html) 与测试页面
+    // 5. 放行静态资源文件、管理后台 (admin.html) 与测试页面
     if (
       request.method === 'OPTIONS' ||
       pathname.endsWith('.css') ||
@@ -704,7 +1057,7 @@ export default {
       return fetch(request);
     }
 
-    // 4. 严格参数白名单校验: 携带任何非法/未授权参数立即 400
+    // 6. 严格参数白名单校验: 携带任何非法/未授权参数立即 400
     for (const key of url.searchParams.keys()) {
       if (!ALLOWED_PARAMS.has(key)) {
         return new Response(GOOGLE_400_HTML, {
@@ -720,7 +1073,7 @@ export default {
       }
     }
 
-    // 5. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
+    // 7. 泛域名白名单校验 (*.yaoxi.wiki, *.yaoxi.cloud)
     const targetDomain = url.searchParams.get('target_domain');
     if (targetDomain && !isAllowedDomain(targetDomain)) {
       return new Response(GOOGLE_400_HTML, {
@@ -735,7 +1088,7 @@ export default {
       });
     }
 
-    // 6. 严格校验 client_request_token 密码学防伪签名
+    // 8. 严格校验 client_request_token 密码学防伪签名
     const token = url.searchParams.get('client_request_token');
     const resolvedTarget = targetDomain || 'yaoxi.cloud';
     const secret = (env && env.SSO_HANDSHAKE_SECRET) || DEFAULT_SSO_HANDSHAKE_SECRET;
@@ -754,7 +1107,7 @@ export default {
       });
     }
 
-    // 7. 密码学验签通过 -> 放行至登录中心页面 (index.html / accounts-login.html)
+    // 9. 密码学验签通过 -> 放行至登录中心页面 (index.html / accounts-login.html)
     if (env && env.ASSETS) {
       return env.ASSETS.fetch(request);
     }

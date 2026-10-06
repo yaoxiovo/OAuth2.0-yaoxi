@@ -87,6 +87,13 @@ export async function onRequestPost(context) {
       });
     }
 
+    if (matchedUser.status === 'pending') {
+      return new Response(JSON.stringify({ success: false, error: '此帐号正在等待管理员审核，审核通过后即可登录' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
     if (matchedUser.status && matchedUser.status !== 'active') {
       return new Response(JSON.stringify({ success: false, error: '此 Google 帐号已被管理员停用或冻结' }), {
         status: 403,

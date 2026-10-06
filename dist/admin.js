@@ -31,6 +31,12 @@
       enabled: true,
       siteKey: "0x4AAAAAAEXamT3iIRWjGCmk"
     },
+    registration: {
+      enabled: true,
+      requireApproval: true,
+      defaultRoles: ["member"],
+      rateLimit: { perIpHour: 5, perIpDay: 20 }
+    },
     branding: {
       systemTitle: "Google 帐号 - 统一身份认证",
       welcomeTitle: "欢迎",
@@ -170,12 +176,18 @@
     try {
       const stored = localStorage.getItem('yaoxi_sso_config');
       if (stored) {
-        activeConfig = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        // 仅接受携带完整用户目录的管理端缓存；登录页写入的公开配置(已移除用户目录)不具备管理端效力
+        if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.domains)) {
+          activeConfig = parsed;
+        }
       }
     } catch (e) {}
 
-    if (!activeConfig) {
+    if (!activeConfig || !Array.isArray(activeConfig.users)) {
       activeConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    } else if (!Array.isArray(activeConfig.domains)) {
+      activeConfig.domains = [];
     }
     syncAllSuspendedUsersToBlacklist();
 
@@ -351,9 +363,16 @@
     const elIssuer = document.getElementById('ov-issuer');
     const elTurnstile = document.getElementById('ov-turnstile-status');
 
-    if (elDomCount) elDomCount.textContent = activeConfig.domains.filter(d => d.enabled).length;
-    if (elUserCount) elUserCount.textContent = activeConfig.users.filter(u => u.status === 'active').length;
-    if (elClientCount) elClientCount.textContent = activeConfig.clients.length;
+    if (elDomCount) elDomCount.textContent = (activeConfig.domains || []).filter(d => d.enabled).length;
+    if (elUserCount) {
+      const usersList = activeConfig.users || [];
+      const activeCount = usersList.filter(u => u.status === 'active').length;
+      const pendingCount = usersList.filter(u => u.status === 'pending').length;
+      elUserCount.innerHTML = String(activeCount) + (pendingCount > 0
+        ? ` <span class="badge badge-warning" style="font-size:11px; vertical-align:middle;">${pendingCount} 待审核</span>`
+        : '');
+    }
+    if (elClientCount) elClientCount.textContent = (activeConfig.clients || []).length;
     if (elTtl) elTtl.textContent = (activeConfig.security.tokenTtl || 7200) + 's';
     if (elIssuer) elIssuer.textContent = activeConfig.security.ssoIssuer || 'https://accounts.yaoxi.cloud';
     if (elTurnstile) {
@@ -364,7 +383,7 @@
 
     const tbody = document.getElementById('overview-clients-tbody');
     if (tbody) {
-      tbody.innerHTML = activeConfig.clients.map(c => `
+      tbody.innerHTML = (activeConfig.clients || []).map(c => `
         <tr>
           <td><strong>${c.clientName}</strong></td>
           <td><code>${c.clientId}</code></td>
@@ -523,12 +542,74 @@
   // ==========================================================================
   // Section 3: Users CRUD
   // ==========================================================================
+  function ensureRegistrationPolicy() {
+    if (!activeConfig.registration || typeof activeConfig.registration !== 'object') {
+      activeConfig.registration = {
+        enabled: true,
+        requireApproval: true,
+        defaultRoles: ["member"],
+        rateLimit: { perIpHour: 5, perIpDay: 20 }
+      };
+    }
+    return activeConfig.registration;
+  }
+
+  function renderRegistrationPolicy() {
+    const reg = ensureRegistrationPolicy();
+    const enabledSwitch = document.getElementById('reg-enabled-switch');
+    const approvalSwitch = document.getElementById('reg-approval-switch');
+    const badge = document.getElementById('reg-policy-badge');
+
+    if (enabledSwitch) enabledSwitch.checked = reg.enabled !== false;
+    if (approvalSwitch) {
+      approvalSwitch.checked = reg.requireApproval !== false;
+      approvalSwitch.disabled = reg.enabled === false;
+    }
+    if (badge) {
+      if (reg.enabled === false) {
+        badge.innerHTML = '<span class="badge badge-neutral">已关闭 (仅管理员创建)</span>';
+      } else if (reg.requireApproval !== false) {
+        badge.innerHTML = '<span class="badge badge-warning">开放注册中 · 需审核</span>';
+      } else {
+        badge.innerHTML = '<span class="badge badge-success">开放注册中 · 直接激活</span>';
+      }
+    }
+  }
+
+  window.toggleRegistrationEnabled = async function (checked) {
+    const reg = ensureRegistrationPolicy();
+    reg.enabled = checked;
+    recordAuditLog('REG_POLICY_UPDATE', `${checked ? '开放' : '关闭'}自助注册 (审核模式: ${reg.requireApproval !== false ? '开启' : '关闭'})`);
+    persistLocalConfig();
+    renderRegistrationPolicy();
+    const res = await pushRemoteConfig();
+    if (res && res.savedToKv) {
+      showToast(checked ? '已开放自助注册，登录页「创建账号」入口即时生效！' : '已关闭自助注册，登录页入口已下线', checked ? 'success' : 'warning');
+    } else {
+      showToast('注册策略已保存，但同步到云端失败，请重试', 'warning');
+    }
+  };
+
+  window.toggleRegistrationApproval = async function (checked) {
+    const reg = ensureRegistrationPolicy();
+    reg.requireApproval = checked;
+    recordAuditLog('REG_POLICY_UPDATE', `新注册账号${checked ? '需' : '无需'}管理员审核${checked ? '' : '（注册后直接激活）'}`);
+    persistLocalConfig();
+    renderRegistrationPolicy();
+    const res = await pushRemoteConfig();
+    if (res && res.savedToKv) {
+      showToast(checked ? '已开启审核模式：新账号需审核通过后方可登录' : '已关闭审核模式：新账号注册后直接激活', checked ? 'primary' : 'warning');
+    } else {
+      showToast('注册策略已保存，但同步到云端失败，请重试', 'warning');
+    }
+  };
+
   window.renderUsersTable = function () {
     const tbody = document.getElementById('users-table-tbody');
     if (!tbody) return;
 
     const query = (document.getElementById('user-search')?.value || '').trim().toLowerCase();
-    const filtered = activeConfig.users.filter(u => {
+    const filtered = (activeConfig.users || []).filter(u => {
       return !query || u.username.toLowerCase().includes(query) || u.email.toLowerCase().includes(query) || (u.displayName && u.displayName.toLowerCase().includes(query));
     });
 
@@ -559,6 +640,7 @@
             <div>
               <strong>${escapeHtml(u.username)}</strong>
               <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(u.displayName || u.username)}</div>
+              ${u.registeredVia === 'self_registration' ? '<span class="badge badge-neutral" style="font-size:10px; margin-top:3px;">自助注册</span>' : ''}
             </div>
           </div>
         </td>
@@ -584,6 +666,12 @@
             : '<span class="badge badge-neutral">密码登录</span>'}
         </td>
         <td>
+          ${u.status === 'pending' ? `
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="badge badge-warning">⏳ 待审核</span>
+            <button class="btn btn-primary btn-sm" onclick="approvePendingUser('${escapeHtml(u.id)}')">通过</button>
+            <button class="btn btn-danger-outline btn-sm" onclick="rejectPendingUser('${escapeHtml(u.id)}')">拒绝</button>
+          </div>` : `
           <div style="display:flex; align-items:center; gap:8px;">
             <label class="switch" title="${u.status === 'active' ? '点击冻结该账号' : '点击解冻该账号'}">
               <input type="checkbox" class="switch-input" ${u.status === 'active' ? 'checked' : ''} onchange="toggleUserStatus('${escapeHtml(u.id)}', this.checked)">
@@ -592,7 +680,7 @@
             <span class="badge ${u.status === 'active' ? 'badge-success' : 'badge-danger'}">
               ${u.status === 'active' ? '正常' : '已冻结'}
             </span>
-          </div>
+          </div>`}
         </td>
         <td style="text-align:right;">
           <div style="display:inline-flex; gap:6px;">
@@ -740,6 +828,8 @@
       const u = activeConfig.users.find(x => x.id === id);
       if (u) {
         const oldStatus = u.status;
+        // 待审核账号的状态仅能通过列表中的「通过 / 拒绝」操作流转，此处编辑凭证时保持不变
+        const nextStatus = (oldStatus === 'pending') ? 'pending' : status;
         u.email = email;
         u.displayName = displayName;
         if (passwordHash) u.passwordHash = passwordHash;
@@ -747,10 +837,10 @@
         u.platformTokens = platformTokens;
         u.roles = roles;
         u.passkeyBound = passkeyBound;
-        u.status = status;
+        u.status = nextStatus;
         recordAuditLog('USER_UPDATE', `更新账号凭证: ${username} (${email})`);
-        if (oldStatus !== status || status !== 'active') {
-          broadcastRevocationEvent(u, 'UPDATE_USER', status);
+        if (oldStatus !== nextStatus || nextStatus !== 'active') {
+          broadcastRevocationEvent(u, 'UPDATE_USER', nextStatus);
         }
       }
     } else {
@@ -787,6 +877,40 @@
 
   window.editUser = function (id) {
     openUserModal(id);
+  };
+
+  window.approvePendingUser = async function (id) {
+    const u = activeConfig.users.find(x => x.id === id);
+    if (!u) return;
+    u.status = 'active';
+    recordAuditLog('USER_APPROVE', `审核通过自助注册账号: ${u.username} (${u.email})`);
+    persistLocalConfig();
+    renderUsersTable();
+    renderOverview();
+    const res = await pushRemoteConfig();
+    if (res && res.savedToKv) {
+      showToast(`✅ 已通过账号 "${u.username}" 的注册申请，该账号现在可以登录了！`, 'success');
+    } else {
+      showToast(`已通过账号 "${u.username}"，但同步到云端失败，请重试`, 'warning');
+    }
+  };
+
+  window.rejectPendingUser = async function (id) {
+    const u = activeConfig.users.find(x => x.id === id);
+    if (!u) return;
+    if (!confirm(`确定要拒绝并删除账号 "${u.username}" (${u.email}) 的注册申请吗？`)) return;
+
+    activeConfig.users = activeConfig.users.filter(x => x.id !== id);
+    recordAuditLog('USER_REJECT', `拒绝自助注册申请: ${u.username} (${u.email})`);
+    persistLocalConfig();
+    renderUsersTable();
+    renderOverview();
+    const res = await pushRemoteConfig();
+    if (res && res.savedToKv) {
+      showToast(`已拒绝账号 "${u.username}" 的注册申请`, 'neutral');
+    } else {
+      showToast(`已拒绝账号 "${u.username}"，但同步到云端失败，请重试`, 'warning');
+    }
   };
 
   window.deleteUser = async function (id) {
@@ -1024,15 +1148,22 @@
       return;
     }
 
-    tbody.innerHTML = logs.map(l => `
+    tbody.innerHTML = logs.map(l => {
+      const act = l.action || '';
+      let badgeClass = 'badge-primary';
+      if (act.includes('ADD') || act.includes('APPROVE') || act.includes('REGISTER')) badgeClass = 'badge-success';
+      else if (act.includes('DELETE') || act.includes('REJECT')) badgeClass = 'badge-danger';
+      else if (act.includes('TOGGLE') || act.includes('UPDATE')) badgeClass = 'badge-warning';
+      return `
       <tr>
         <td style="font-size:12px; font-family:var(--admin-mono); color:var(--text-muted);">${escapeHtml(formatIsoTime(l.timestamp))}</td>
-        <td><span class="badge ${l.action.includes('ADD') ? 'badge-success' : (l.action.includes('DELETE') ? 'badge-danger' : 'badge-primary')}">${escapeHtml(l.action)}</span></td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(act)}</span></td>
         <td><strong>${escapeHtml(l.operator || 'admin')}</strong></td>
         <td style="font-size:13px;">${escapeHtml(l.details || '-')}</td>
         <td><code>${escapeHtml(l.ip || '127.0.0.1')}</code></td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   window.clearAuditLogs = function () {
@@ -1240,7 +1371,10 @@
         // Refresh views for specific tab
         if (tabId === 'overview') renderOverview();
         if (tabId === 'domains') renderDomainsTable();
-        if (tabId === 'users') renderUsersTable();
+        if (tabId === 'users') {
+          renderRegistrationPolicy();
+          renderUsersTable();
+        }
         if (tabId === 'clients') renderClientsTable();
         if (tabId === 'security') renderSecurityTab();
         if (tabId === 'branding') renderBrandingTab();
@@ -1295,6 +1429,7 @@
   function refreshAllViews() {
     renderOverview();
     renderDomainsTable();
+    renderRegistrationPolicy();
     renderUsersTable();
     renderClientsTable();
     renderSecurityTab();

@@ -30,6 +30,10 @@ const jsFiles = [
   'worker.js',
   path.join('functions', '_middleware.js'),
   path.join('functions', 'api', 'config.js'),
+  path.join('functions', 'api', 'login.js'),
+  path.join('functions', 'api', 'status.js'),
+  path.join('functions', 'api', 'register.js'),
+  path.join('functions', 'api', 'lookup.js'),
   path.join('sdk', 'yaoxi-auth.js'),
   'cloudflare-worker-400.js'
 ];

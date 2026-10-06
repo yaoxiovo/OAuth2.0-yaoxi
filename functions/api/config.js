@@ -23,6 +23,12 @@ const DEFAULT_CONFIG = {
     enabled: true,
     siteKey: "0x4AAAAAAEXamT3iIRWjGCmk"
   },
+  registration: {
+    enabled: true,
+    requireApproval: true,
+    defaultRoles: ["member"],
+    rateLimit: { perIpHour: 5, perIpDay: 20 }
+  },
   branding: {
     systemTitle: "Google 帐号 - 统一身份认证",
     welcomeTitle: "欢迎",
@@ -96,16 +102,8 @@ function sanitizePublicConfig(rawConfig) {
   if (!rawConfig || typeof rawConfig !== 'object') return {};
   const clone = JSON.parse(JSON.stringify(rawConfig));
 
-  if (Array.isArray(clone.users)) {
-    clone.users = clone.users.map(u => {
-      const safeUser = { ...u };
-      delete safeUser.password;
-      delete safeUser.passwordHash;
-      delete safeUser.salt;
-      delete safeUser.platformTokens;
-      return safeUser;
-    });
-  }
+  // 用户目录隐私加固：公开配置绝不下发任何账号清单 (含邮箱)，账号解析统一走 /api/lookup
+  delete clone.users;
 
   if (clone.security) {
     delete clone.security.handshakeSecret;

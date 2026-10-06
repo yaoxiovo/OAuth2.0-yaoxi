@@ -261,6 +261,32 @@
           <button class="btn btn-primary" onclick="openUserModal()">+ 添加授权用户</button>
         </div>
 
+        <!-- Open Registration Policy Control -->
+        <div class="card-panel" style="margin-bottom: 20px;">
+          <div class="card-panel-header">
+            <span class="card-panel-title">📝 开放自助注册策略</span>
+            <span id="reg-policy-badge"><span class="badge badge-neutral">加载中...</span></span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <label class="switch-label">
+              <input type="checkbox" id="reg-enabled-switch" class="switch-input" onchange="toggleRegistrationEnabled(this.checked)">
+              <span class="switch-track"></span>
+              <div>
+                <strong style="font-size: 14px;">开放自助注册 (访客可在登录页自行创建账号)</strong>
+                <div class="form-hint">开启后登录页将展示「创建账号」入口；关闭后仅管理员可在本控制台创建账号</div>
+              </div>
+            </label>
+            <label class="switch-label">
+              <input type="checkbox" id="reg-approval-switch" class="switch-input" onchange="toggleRegistrationApproval(this.checked)">
+              <span class="switch-track"></span>
+              <div>
+                <strong style="font-size: 14px;">新注册账号需管理员审核 (推荐)</strong>
+                <div class="form-hint">开启后新账号以「待审核」状态入库，需在上方列表中点击「通过」后方可登录</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
         <div class="card-panel">
           <div class="card-panel-header">
             <span class="card-panel-title">认证中心账号列表</span>

@@ -23,9 +23,9 @@ def test_vulnerability_1_and_2_config_security():
         assert 'password: "yaoxi"' not in code, f"{path} 仍包含明文 password: yaoxi!"
         assert 'DEFAULT_ADMIN_PASSWORD_HASH' in code, f"{path} 缺少哈希密码常量!"
 
-        # 2. 确保包含 sanitizePublicConfig 且剔除密码及内部密钥
+        # 2. 确保包含 sanitizePublicConfig 且彻底移除用户目录与内部密钥 (用户邮箱清单零泄露)
         assert 'function sanitizePublicConfig' in code, f"{path} 缺少数据脱敏函数!"
-        assert 'delete safeUser.password;' in code, f"{path} 未在脱敏函数中剔除 password!"
+        assert 'delete clone.users;' in code, f"{path} 公开配置未彻底移除用户目录 (users)!"
         assert 'delete clone.security.handshakeSecret;' in code, f"{path} 未在脱敏函数中剔除 handshakeSecret!"
 
         # 3. 确保包含 verifyAdminAuth 权限拦截
@@ -180,11 +180,11 @@ def test_personalized_platform_tokens():
     admin_js = os.path.join(ROOT_DIR, "admin.js")
     client_blog = os.path.join(ROOT_DIR, "client-blog.html")
 
-    # 1. 验证公共配置脱敏：绝对杜绝未授权访客通过 /api/config 窃取用户的 GitHub/Cloudflare Token
+    # 1. 验证公共配置脱敏：绝对杜绝未授权访客通过 /api/config 窃取用户的 GitHub/Cloudflare Token 及邮箱清单
     for path in [config_js, worker_js]:
         with open(path, "r", encoding="utf-8") as f:
             code = f.read()
-        assert "delete safeUser.platformTokens;" in code, f"{path} 未在 sanitizePublicConfig 中脱敏剔除 platformTokens!"
+        assert "delete clone.users;" in code, f"{path} 公开配置未彻底移除用户目录 (platformTokens 零泄露)!"
 
     # 2. 验证服务端登录核验 /api/login 返回个性化 platform_tokens
     for path in [login_api_js, worker_js]:
@@ -226,6 +226,85 @@ def test_personalized_platform_tokens():
 
     print("  ✅ 个人账号个性化平台 Token（GitHub/Cloudflare等）全链路携带与安全脱敏测试全部通过！")
 
+def test_open_registration_and_privacy_hardening():
+    print("\nTesting Open Registration & User Directory Privacy Hardening: 开放注册与用户目录隐私加固...")
+    worker_js = os.path.join(ROOT_DIR, "worker.js")
+    config_js = os.path.join(ROOT_DIR, "functions", "api", "config.js")
+    login_api_js = os.path.join(ROOT_DIR, "functions", "api", "login.js")
+    register_js = os.path.join(ROOT_DIR, "functions", "api", "register.js")
+    lookup_js = os.path.join(ROOT_DIR, "functions", "api", "lookup.js")
+    login_js = os.path.join(ROOT_DIR, "accounts-login.js")
+    login_html = os.path.join(ROOT_DIR, "accounts-login.html")
+    admin_js = os.path.join(ROOT_DIR, "admin.js")
+    admin_html = os.path.join(ROOT_DIR, "admin.html")
+
+    # 1. 后端注册与账号解析端点存在且具备完整安全控制
+    assert os.path.exists(register_js), "functions/api/register.js 缺失!"
+    assert os.path.exists(lookup_js), "functions/api/lookup.js 缺失!"
+    for path in [worker_js, register_js]:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        assert "USERNAME_PATTERN" in code, f"{path} 缺少用户名服务端格式校验!"
+        assert "RESERVED_USERNAMES" in code, f"{path} 缺少保留用户名保护!"
+        assert "verifyTurnstileToken" in code, f"{path} 缺少 Turnstile 服务端 siteverify 二次校验!"
+        assert "checkRateLimit" in code, f"{path} 缺少 KV IP 限流硬上限!"
+        assert "USER_REGISTER" in code, f"{path} 缺少注册审计日志!"
+        assert "requireApproval" in code, f"{path} 缺少审核模式开关!"
+        assert "'pending'" in code, f"{path} 缺少待审核状态流转!"
+
+    with open(worker_js, "r", encoding="utf-8") as f:
+        worker_code = f.read()
+    assert "pathname === '/api/register'" in worker_code, "worker.js 缺少 /api/register 路由!"
+    assert "pathname === '/api/lookup'" in worker_code, "worker.js 缺少 /api/lookup 路由!"
+    assert "registration:" in worker_code, "worker.js DEFAULT_CONFIG 缺少 registration 策略块!"
+
+    with open(config_js, "r", encoding="utf-8") as f:
+        config_code = f.read()
+    assert "registration:" in config_code, "functions/api/config.js DEFAULT_CONFIG 缺少 registration 策略块!"
+
+    # 2. 账号解析仅返回最小必要信息 (掩码邮箱)
+    with open(lookup_js, "r", encoding="utf-8") as f:
+        lookup_code = f.read()
+    assert "maskEmail" in lookup_code, "lookup.js 缺少邮箱掩码函数!"
+    assert "emailMasked" in lookup_code, "lookup.js 未返回掩码邮箱!"
+
+    # 3. 待审核账号登录被明确拦截
+    for path in [login_api_js, worker_js]:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        assert "等待管理员审核" in code, f"{path} 缺少 pending 账号登录拦截提示!"
+
+    # 4. 登录页具备完整注册步骤与等待审核页
+    with open(login_js, "r", encoding="utf-8") as f:
+        login_code = f.read()
+    assert "fetch('/api/register'" in login_code, "accounts-login.js 未接入 /api/register 注册接口!"
+    assert "fetch('/api/lookup'" in login_code, "accounts-login.js 未接入 /api/lookup 账号解析接口!"
+    assert "'register-pending'" in login_code, "accounts-login.js 缺少等待审核步骤!"
+
+    with open(login_html, "r", encoding="utf-8") as f:
+        login_h = f.read()
+    assert 'id="step-register"' in login_h, "accounts-login.html 缺少注册步骤容器!"
+    assert 'id="step-register-pending"' in login_h, "accounts-login.html 缺少等待审核页容器!"
+    assert 'id="g-btn-create-account"' in login_h, "accounts-login.html 缺少创建账号入口按钮!"
+
+    # 5. 管理后台具备注册策略开关与待审核审批操作
+    with open(admin_html, "r", encoding="utf-8") as f:
+        admin_h = f.read()
+    assert "reg-enabled-switch" in admin_h, "admin.html 缺少开放注册总开关!"
+    assert "reg-approval-switch" in admin_h, "admin.html 缺少新账号审核模式开关!"
+
+    with open(admin_js, "r", encoding="utf-8") as f:
+        admin_code = f.read()
+    assert "renderRegistrationPolicy" in admin_code, "admin.js 缺少注册策略渲染逻辑!"
+    assert "approvePendingUser" in admin_code, "admin.js 缺少待审核账号「通过」操作!"
+    assert "rejectPendingUser" in admin_code, "admin.js 缺少待审核账号「拒绝」操作!"
+    assert "REG_POLICY_UPDATE" in admin_code, "admin.js 缺少注册策略审计日志!"
+    assert "USER_APPROVE" in admin_code, "admin.js 缺少审核通过审计日志!"
+    assert "USER_REJECT" in admin_code, "admin.js 缺少拒绝注册审计日志!"
+    assert "registeredVia" in admin_code, "admin.js 缺少自助注册来源标识渲染!"
+
+    print("  ✅ 开放注册、审核流转、限流防护与用户目录隐私加固断言全部通过！")
+
 if __name__ == "__main__":
     print("\n==================================================")
     print(" 🧪 运行安全审计全量回归单元测试套件")
@@ -238,6 +317,7 @@ if __name__ == "__main__":
     test_timing_attack_protection()
     test_account_revocation_and_client_guard()
     test_personalized_platform_tokens()
+    test_open_registration_and_privacy_hardening()
     print("\n==================================================")
     print(" 💯 全部安全漏洞与即时退登门禁机制验证通过！系统就绪！")
     print("==================================================\n")
