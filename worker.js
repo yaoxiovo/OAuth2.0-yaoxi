@@ -684,6 +684,24 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname.toLowerCase();
 
+    // Nonce-bound, domain-separated key confirmation for trusted service integration.
+    // This never returns the key and cannot sign an identity JWT.
+    if (pathname === '/api/auth/verify-key') {
+      const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+      if (request.method !== 'POST') return new Response(JSON.stringify({ success: false }), { status: 405, headers });
+      let body;
+      try { body = await request.json(); } catch { return new Response(JSON.stringify({ success: false }), { status: 400, headers }); }
+      const nonce = body && body.nonce;
+      if (typeof nonce !== 'string' || !/^[a-f0-9]{64}$/.test(nonce)) return new Response(JSON.stringify({ success: false }), { status: 400, headers });
+      const secret = env && env.JWT_SECRET;
+      if (typeof secret !== 'string' || secret.length < 32) return new Response(JSON.stringify({ success: false, configured: false }), { status: 503, headers });
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const signature = await crypto.subtle.sign('HMAC', key, encoder.encode('yaoxi-identity-key-confirmation:v1:' + nonce));
+      const proof = Array.from(new Uint8Array(signature)).map(value => value.toString(16).padStart(2, '0')).join('');
+      return new Response(JSON.stringify({ success: true, configured: true, proof }), { headers });
+    }
+
     // 1. API 接口: /api/login (密码学身份核验与真实 JWT 签发)
     if (pathname === '/api/login') {
       if (request.method === 'OPTIONS') {
