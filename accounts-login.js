@@ -92,6 +92,7 @@
     }
 
     return (
+      d === 'pic.yaoxiovo.cn' ||
       d === 'yaoxi.wiki' ||
       d.endsWith('.yaoxi.wiki') ||
       d === 'yaoxi.cloud' ||

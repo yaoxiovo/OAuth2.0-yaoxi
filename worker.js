@@ -44,6 +44,7 @@ function isAllowedDomain(domain) {
   if (!domain || typeof domain !== 'string') return false;
   const d = domain.trim().toLowerCase();
   return (
+    d === 'pic.yaoxiovo.cn' ||
     d === 'yaoxi.wiki' ||
     d.endsWith('.yaoxi.wiki') ||
     d === 'yaoxi.cloud' ||
