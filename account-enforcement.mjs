@@ -1,5 +1,5 @@
-// One strongly consistent Durable Object per identity. Never use the global
-// configuration KV as a revocation ledger: its cached reads can be stale.
+// Per-identity transactional ledger backed by local SQLite (server/storage.mjs).
+// Keep revocation state separate from the global configuration document.
 const DAY = 86_400_000;
 const initialState = () => ({ violationCount: 0, tokenVersion: 0, frozenAt: null, frozenUntil: null, permanent: false, freezeEventId: null });
 const validText = value => typeof value === 'string' && value.length > 0 && value.length <= 300 && !/[\u0000-\u001f]/.test(value);

@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew Yaoxi identity HTTPS certificates
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/yaoxi-acme/acme.sh --cron --home /opt/yaoxi-acme
+UMask=0077

@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up Yaoxi identity database
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /www/wwwroot/account.yaoxiovo.cn/server/deploy/backup.py
+UMask=0077

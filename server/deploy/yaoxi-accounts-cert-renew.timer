@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Yaoxi identity certificate renewal check
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target
