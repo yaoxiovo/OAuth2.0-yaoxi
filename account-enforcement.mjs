@@ -57,7 +57,10 @@ export class AccountEnforcement {
         const violationKey = 'event:' + body.violationEventId;
         const violation = await tx.get(violationKey);
         if (!violation || JSON.parse(violation.fingerprint)[0] !== 'violation') return json({ success: false, code: 'VIOLATION_NOT_FOUND' }, 404);
-        if (violation.overturned) return json({ success: true, duplicate: true, data: enforcementView(state, now) });
+        if (violation.overturned) {
+          await tx.put(key, { fingerprint, action: body.action, actor: body.actor, reason: body.reason, time: new Date(now).toISOString(), tokenVersion: state.tokenVersion });
+          return json({ success: true, duplicate: true, data: enforcementView(state, now) });
+        }
         if (state.violationCount < 1) return json({ success: false, code: 'VIOLATION_LEDGER_CONFLICT' }, 409);
         changesState = state.freezeEventId === body.violationEventId && enforcementView(state, now).frozen;
         state.violationCount--;

@@ -164,6 +164,7 @@ test('overturning a false positive releases its freeze, removes exactly one stri
   assert.equal((await call({ ...correction, eventId: 'correction-2' })).data.violationCount, 0);
   const next = await violation('valid-1');
   assert.equal(next.data.violationCount, 1);
+  assert.equal((await call({ ...correction, eventId: 'correction-2', violationEventId: 'valid-1' })).status, 409);
   assert.equal(Date.parse(next.data.frozenUntil) - Date.parse(next.data.frozenAt), 7 * 86400_000);
   assert.equal((await call({ ...correction, eventId: 'missing', violationEventId: 'not-a-violation' })).status, 404);
 });
