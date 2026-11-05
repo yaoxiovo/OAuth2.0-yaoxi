@@ -1,0 +1,32 @@
+[Unit]
+Description=Yaoxi unified identity center
+After=network.target
+
+[Service]
+Type=simple
+User=yaoxi-accounts
+Group=yaoxi-accounts
+WorkingDirectory=/www/wwwroot/account.yaoxiovo.cn
+Environment=NODE_ENV=production
+Environment=PORT=3010
+Environment=PUBLIC_ORIGIN=https://account.yaoxiovo.cn
+Environment=SSO_DB_PATH=/var/lib/yaoxi-accounts/accounts.sqlite
+EnvironmentFile=/etc/yaoxi-accounts/runtime.env
+ExecStart=/usr/bin/node --experimental-default-type=module server/main.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=yaoxi-accounts
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

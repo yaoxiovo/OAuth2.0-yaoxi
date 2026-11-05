@@ -1,6 +1,6 @@
 /**
  * build.js - 耀西统一身份认证中心自动化构建脚本
- * 零第三方依赖 (纯 Node.js 内置模块)，兼容 Cloudflare Pages、GitHub Actions 与本地环境
+ * 零第三方依赖 (纯 Node.js 内置模块)，支持腾讯云 Node.js 服务、GitHub Actions 与本地环境
  * 
  * 构建职责:
  * 1. 语法门禁检查 (Syntax verification on all JavaScript files)
@@ -8,7 +8,7 @@
  * 3. 生产版本号与防缓存注入 (Cache-busting version stamping for CSS/JS)
  * 4. 同步 accounts-login.html -> index.html (确保单点登录与主页 100% 同步)
  * 5. 边缘中间件同步 (_middleware.js -> cloudflare-worker-400.js)
- * 6. 生成 dist/ 生产输出目录 (兼容 Cloudflare Pages 输出根目录与 dist 目录)
+ * 6. 生成 dist/ 静态资源目录，由 Node.js 服务提供访问
  */
 
 const fs = require('fs');
@@ -19,7 +19,7 @@ const ROOT_DIR = __dirname;
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
 
 console.log('\n======================================================');
-console.log(' 🚀 正在执行构建: accounts.yaoxi.cloud 统一身份认证中心');
+console.log(' 🚀 正在执行构建: account.yaoxiovo.cn 统一身份认证中心');
 console.log('======================================================\n');
 
 // 1. 语法门禁自检
@@ -28,6 +28,11 @@ const jsFiles = [
   'accounts-login.js',
   'admin.js',
   'worker.js',
+  'account-enforcement.mjs',
+  path.join('server', 'main.mjs'),
+  path.join('server', 'storage.mjs'),
+  path.join('server', 'assets.mjs'),
+  path.join('server', 'import.mjs'),
   path.join('functions', '_middleware.js'),
   path.join('functions', 'api', 'config.js'),
   path.join('functions', 'api', 'login.js'),
@@ -183,6 +188,6 @@ copyDirRecursive(path.join(ROOT_DIR, 'sdk'), path.join(DIST_DIR, 'sdk'));
 console.log('  ✅ dist/ 生产就绪 (兼容根目录或 dist 输出目录)');
 console.log('\n======================================================');
 console.log(' 🎉 构建完成！所有静态资源与安全配置均已就绪。');
-console.log(' 💡 Cloudflare Pages 构建命令: npm run build');
-console.log(' 💡 Cloudflare Pages 输出目录: dist 或 .');
+console.log(' 💡 构建命令: npm run build');
+console.log(' 💡 Node.js 启动命令: npm start；静态资源目录: dist');
 console.log('======================================================\n');

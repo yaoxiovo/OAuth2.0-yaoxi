@@ -21,7 +21,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const DEFAULT_SSO_URL = 'https://accounts.yaoxi.cloud';
+  const DEFAULT_SSO_URL = 'https://account.yaoxiovo.cn';
   const SSO_HANDSHAKE_SECRET = 'yaoxi_sso_handshake_secret_key_v1_auth_guard_2026';
 
   class YaoxiAuth {

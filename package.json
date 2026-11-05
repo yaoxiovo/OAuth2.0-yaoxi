@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "description": "Production SSO Gateway & Identity Auth System for yaoxi.cloud and yaoxi.wiki",
   "main": "accounts-login.js",
+  "engines": { "node": ">=22.13.0 <23" },
   "scripts": {
+    "start": "node --experimental-default-type=module server/main.mjs",
     "build": "node build.js",
-    "deploy": "wrangler deploy",
     "test": "node -c accounts-login.js functions/_middleware.js sdk/yaoxi-auth.js cloudflare-worker-400.js worker.js",
     "prepush": "node build.js",
-    "test:enforcement": "node --experimental-default-type=module --test test/*.test.mjs"
+    "test:enforcement": "node --experimental-default-type=module --test test/enforcement.test.mjs test/sdk-revocation.test.mjs",
+    "test:server": "node --experimental-default-type=module --test test/server.test.mjs"
   },
   "keywords": [
     "sso",

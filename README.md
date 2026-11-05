@@ -1,4 +1,8 @@
-# accounts.yaoxi.cloud 统一身份认证中心
+# account.yaoxiovo.cn 统一身份认证中心
+
+生产服务运行在腾讯云首尔 `43.128.137.8`，由 Node.js 22、SQLite、Nginx 和 systemd 托管。Cloudflare Workers 已退出生产部署。新接入使用 `https://account.yaoxiovo.cn`；原 `accounts.yaoxi.cloud` 作为同一服务的兼容入口，现有 JWT issuer 和签名密钥保持不变。
+
+部署、数据备份与回滚说明见 [server/DEPLOYMENT.md](server/DEPLOYMENT.md)。下文保留原有协议与客户端说明；历史 Cloudflare Pages/Workers 部署说明不再适用于生产。
 
 基于 **OAuth 2.0 / OIDC 协议** 与 **FIDO2 / WebAuthn 通行密钥 (Passkey)** 规范打造的生产级统一身份认证系统。1:1 像素级复刻 Google Identity v3 (Material 3) 登录交互与视觉体系。
 
