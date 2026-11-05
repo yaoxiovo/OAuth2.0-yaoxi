@@ -12,6 +12,10 @@
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "single-page-application"
   },
+  "durable_objects": {
+    "bindings": [{ "name": "ACCOUNT_ENFORCEMENT", "class_name": "AccountEnforcement" }]
+  },
+  "migrations": [{ "tag": "account-enforcement-v1", "new_sqlite_classes": ["AccountEnforcement"] }],
   "kv_namespaces": [
     {
       "binding": "SSO_CONFIG_KV",

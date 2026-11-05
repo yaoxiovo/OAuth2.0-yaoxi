@@ -7,7 +7,8 @@
     "build": "node build.js",
     "deploy": "wrangler deploy",
     "test": "node -c accounts-login.js functions/_middleware.js sdk/yaoxi-auth.js cloudflare-worker-400.js worker.js",
-    "prepush": "node build.js"
+    "prepush": "node build.js",
+    "test:enforcement": "node --experimental-default-type=module --test test/*.test.mjs"
   },
   "keywords": [
     "sso",

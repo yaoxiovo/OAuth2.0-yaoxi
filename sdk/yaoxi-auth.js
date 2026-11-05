@@ -384,45 +384,23 @@
         }
       } catch (e) {}
 
-      // 解析权威认证中心基地址 (优先信任 Token Payload 中的 iss 机构)
-      let targetAuthUrl = this.authUrl;
-      if (user.iss && typeof user.iss === 'string' && user.iss.startsWith('http')) {
-        targetAuthUrl = user.iss;
-      }
-      const base = targetAuthUrl.replace(/\/+$/, '');
-
-      // 2. 服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存)
+      // Never take an introspection URL from an unverified token claim.
+      // The app config pins the provider; protected server APIs must make the
+      // same check themselves rather than trusting this browser guard.
+      const base = this.authUrl.replace(/\/+$/, '');
       try {
-        const statusUrl = `${base}/api/status?username=${encodeURIComponent(curSub)}&email=${encodeURIComponent(curEmail)}&id=${encodeURIComponent(curId)}&t=${Date.now()}`;
-        const res = await fetch(statusUrl, { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && (data.revoked || !data.active || data.status === 'suspended')) {
-            this.logout();
-            this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_REMOTE', username: curSub });
-            return false;
-          }
-          return true;
+        const response = await fetch(`${base}/api/auth/introspect`, {
+          method: 'POST', cache: 'no-store', headers: { Authorization: 'Bearer ' + this.getToken() }
+        });
+        if (!response.ok) return false;
+        const result = await response.json();
+        if (result.active !== true || result.sub?.toLowerCase() !== curSub) {
+          this.logout();
+          this._triggerRevocation({ reason: 'CREDENTIAL_REVOKED_REMOTE', username: curSub });
+          return false;
         }
-      } catch (e) {}
-
-      // 3. 服务端配置 /api/config 兜底自省端点
-      try {
-        const cfgRes = await fetch(`${base}/api/config?t=${Date.now()}`, { cache: 'no-store' });
-        if (cfgRes.ok) {
-          const cfg = await cfgRes.json();
-          if (cfg && Array.isArray(cfg.users)) {
-            const matched = cfg.users.find(u => (u.username || '').toLowerCase() === curSub || (u.email || '').toLowerCase() === curEmail);
-            if (!matched || matched.status !== 'active') {
-              this.logout();
-              this._triggerRevocation({ reason: 'ACCOUNT_SUSPENDED_CONFIG', username: curSub });
-              return false;
-            }
-          }
-        }
-      } catch (e) {}
-
-      return true;
+        return true;
+      } catch { return false; }
     }
 
     _triggerRevocation(data) {

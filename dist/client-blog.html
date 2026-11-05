@@ -315,16 +315,6 @@ window.addEventListener('message', (event) => {
 
       // 0. 解析权威 SSO 认证中心 Origin 基址 (精准定位后端 API，杜绝相对路径 404 误放行)
       function getSSOAuthorityBase() {
-        try {
-          const userStr = localStorage.getItem('yaoxi_client_user');
-          if (userStr) {
-            const u = JSON.parse(userStr);
-            if (u && typeof u.iss === 'string' && u.iss.startsWith('http')) {
-              return u.iss.replace(/\/+$/, '');
-            }
-          }
-        } catch (e) {}
-
         if (typeof SSO_BASE_URL === 'string') {
           if (SSO_BASE_URL.startsWith('http://') || SSO_BASE_URL.startsWith('https://')) {
             try {
@@ -606,45 +596,22 @@ window.addEventListener('message', (event) => {
             }
           } catch (e) {}
 
-          // C. 权威服务端轻量级 /api/status 高频自省端点 (0延迟、无缓存、CORS跨域支持)
+          // Every protected action must validate the actual token, including its
+          // revocation version; account status alone would revive old tokens.
           const authAuthority = getSSOAuthorityBase();
           try {
-            const statusUrl = `${authAuthority}/api/status?username=${encodeURIComponent(sub)}&email=${encodeURIComponent(email)}&id=${encodeURIComponent(id)}&t=${Date.now()}`;
-            const res = await fetch(statusUrl, { cache: 'no-store' });
-            if (res.ok) {
-              const data = await res.json();
-              if (data && (data.revoked || !data.active || data.status === 'suspended')) {
-                handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结或吊销，登录态已即时失效！');
-                return false;
-              }
-              return true;
+            const response = await fetch(`${authAuthority}/api/auth/introspect`, {
+              method: 'POST', cache: 'no-store', headers: { Authorization: 'Bearer ' + token }
+            });
+            if (!response.ok) return false;
+            const result = await response.json();
+            if (result.active !== true || result.sub?.toLowerCase() !== sub) {
+              handleForcedRevocation('此登录凭证已撤销，请重新登录。');
+              return false;
             }
-          } catch (e) {}
-
-          // D. 权威服务端配置 /api/config 兜底自省端点
-          try {
-            const res = await fetch(`${authAuthority}/api/config?t=${Date.now()}`, { cache: 'no-store' });
-            if (res.ok) {
-              const cfg = await res.json();
-              if (cfg && Array.isArray(cfg.users)) {
-                const matched = cfg.users.find(u => {
-                  const uName = (u.username || '').toLowerCase();
-                  const uEmail = (u.email || '').toLowerCase();
-                  return (sub && (uName === sub || uEmail === sub)) || (email && (uEmail === email || uName === email));
-                });
-                if (!matched || matched.status !== 'active') {
-                  handleForcedRevocation('⚠️ 您的账号已在统一身份认证管理中心被冻结，登录态已即时失效！');
-                  return false;
-                }
-              }
-            }
-          } catch (e) {}
-
-          return true;
-        } catch (err) {
-          console.warn('[Client Blog] validateAccountStatus error:', err);
-          return true;
-        }
+            return true;
+          } catch { return false; }
+        } catch { return false; }
       }
 
       // 4. 实时广播监听器 (BroadcastChannel 与 Storage Event 双重保障 0 延迟响应)

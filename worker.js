@@ -1,3 +1,6 @@
+import { accountEnforcement, readEnforcement, verifyServiceRequest, verifyIdentityJwt } from './account-enforcement.mjs';
+export { AccountEnforcement } from './account-enforcement.mjs';
+
 /**
  * worker.js - Cloudflare Worker Entry Point for accounts.yaoxi.cloud
  * 适配 Cloudflare Workers with Static Assets 部署体系
@@ -331,22 +334,23 @@ async function verifyAdminAuth(request, env, config) {
     if (!token) return false;
 
     try {
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const payloadJson = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
-        const payload = JSON.parse(payloadJson);
-        const now = Math.floor(Date.now() / 1000);
-        if (payload.exp && payload.exp < now) return false;
-        if (Array.isArray(payload.roles) && payload.roles.includes('admin')) {
-          return true;
-        }
+      const claims = await verifyIdentityJwt(token, env, config.security?.ssoIssuer || 'https://accounts.yaoxi.cloud');
+      const user = claims && (config.users || []).find(u => u.username === claims.sub);
+      if (user && user.status === 'active' && user.roles?.includes('admin') && claims.roles?.includes('admin')) {
+        const state = await readEnforcement(env, user);
+        return !state.frozen && (claims.token_version ?? 0) === state.tokenVersion;
       }
     } catch (e) {}
 
     const adminUser = (config.users || []).find(u => u.roles && u.roles.includes('admin'));
     if (adminUser) {
       const expectedHash = adminUser.passwordHash || DEFAULT_ADMIN_PASSWORD_HASH;
-      if (token === expectedHash) return true;
+      if (token === expectedHash && adminUser.status === 'active') {
+        const state = await readEnforcement(env, adminUser);
+        // Legacy unversioned bearer credentials cannot become valid again after
+        // the account has ever revoked its existing credentials.
+        return !state.frozen && state.tokenVersion === 0;
+      }
     }
   }
 
@@ -584,6 +588,9 @@ async function handleRegister(request, env) {
     });
   }
 
+  const enforcement = await readEnforcement(env, newUser);
+  if (enforcement.frozen) return Response.json({ success: false, code: 'ACCOUNT_FROZEN', error: '此统一账号已被冻结，无法授权登录。' }, { status: 403 });
+
   // 直接激活模式：注册即完成登录握手，签发与服务端登录一致的 JWT
   const now = Math.floor(Date.now() / 1000);
   const ttl = (config.security && config.security.tokenTtl) || 7200;
@@ -591,6 +598,7 @@ async function handleRegister(request, env) {
   const secret = (env && env.JWT_SECRET) || SERVER_JWT_SECRET;
 
   const payload = {
+    token_version: enforcement.tokenVersion,
     iss: issuer,
     aud: client_id || 'yaoxi-app',
     sub: newUser.username,
@@ -683,6 +691,51 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname.toLowerCase();
+
+    // Dedicated service capability; never accepts browser JWTs or public defaults.
+    if (pathname === '/api/internal/account-enforcement') {
+      const headers = { 'Cache-Control': 'no-store' };
+      if (request.method !== 'POST') return Response.json({ success: false }, { status: 405, headers });
+      try {
+        const reader = request.body?.getReader();
+        if (!reader) return Response.json({ success: false }, { status: 400, headers });
+        let size = 0; const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read(); if (done) break;
+          size += value.length;
+          if (size > 16384) { await reader.cancel(); return Response.json({ success: false }, { status: 413, headers }); }
+          chunks.push(value);
+        }
+        const bytes = new Uint8Array(size); let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+        const raw = new TextDecoder().decode(bytes);
+        if (!await verifyServiceRequest(request, env, raw)) return Response.json({ success: false, code: 'SERVICE_AUTH_REQUIRED' }, { status: 401, headers });
+        const body = JSON.parse(raw);
+        if (body.action !== 'status' && (typeof body.eventId !== 'string' || !body.eventId || body.eventId.length > 200)) return Response.json({ success: false, code: 'EVENT_ID_REQUIRED' }, { status: 400, headers });
+        const config = await loadStoredConfig(env);
+        const user = (config.users || []).find(u => typeof body.subject === 'string' && u.username?.toLowerCase() === body.subject.toLowerCase());
+        if (!user) return Response.json({ success: false, code: 'ACCOUNT_NOT_FOUND' }, { status: 404, headers });
+        const { response, result } = await accountEnforcement(env, user, { ...body, eventId: 'lumitape:' + (body.eventId || '') });
+        return Response.json(result, { status: response.status, headers });
+      } catch { return Response.json({ success: false, code: 'ENFORCEMENT_UNAVAILABLE' }, { status: 503, headers }); }
+    }
+
+    // All applications can validate signature, expiry and current revocation
+    // version here on every protected server request (not by browser polling).
+    if (pathname === '/api/auth/introspect') {
+      const headers = { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization' };
+      if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+      if (request.method !== 'POST') return Response.json({ active: false }, { status: 405, headers });
+      try {
+        const config = await loadStoredConfig(env);
+        const token = (request.headers.get('Authorization') || '').replace(/^Bearer /, '');
+        const claims = await verifyIdentityJwt(token, env, config.security?.ssoIssuer || 'https://accounts.yaoxi.cloud');
+        const user = claims && (config.users || []).find(u => u.username === claims.sub);
+        if (!user || user.status !== 'active') return Response.json({ active: false }, { headers });
+        const state = await readEnforcement(env, user);
+        return Response.json({ active: !state.frozen && (claims.token_version ?? 0) === state.tokenVersion, sub: claims.sub, aud: claims.aud, exp: claims.exp }, { headers });
+      } catch { return Response.json({ active: false, code: 'ENFORCEMENT_UNAVAILABLE' }, { status: 503, headers }); }
+    }
 
     // Nonce-bound, domain-separated key confirmation for trusted service integration.
     // This never returns the key and cannot sign an identity JWT.
@@ -782,6 +835,9 @@ export default {
             }
           }
 
+          const enforcement = await readEnforcement(env, matchedUser);
+          if (enforcement.frozen) return Response.json({ success: false, code: 'ACCOUNT_FROZEN', error: '此统一账号已被冻结，无法授权登录。', frozenUntil: enforcement.frozenUntil, permanent: enforcement.permanent }, { status: 403, headers: { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' } });
+
           const now = Math.floor(Date.now() / 1000);
           const ttl = (config.security && config.security.tokenTtl) || 7200;
           const issuer = (config.security && config.security.ssoIssuer) || 'https://accounts.yaoxi.cloud';
@@ -789,6 +845,7 @@ export default {
           const platformTokens = matchedUser.platformTokens || {};
 
           const payload = {
+            token_version: enforcement.tokenVersion,
             iss: issuer,
             aud: client_id || 'yaoxi-app',
             sub: matchedUser.username,
@@ -927,13 +984,17 @@ export default {
       });
 
       if (matchedUser) {
-        const isActive = (matchedUser.status === 'active');
+        let enforcement;
+        try { enforcement = await readEnforcement(env, matchedUser); }
+        catch { return Response.json({ success: false, active: false, revoked: true, code: 'ENFORCEMENT_UNAVAILABLE' }, { status: 503, headers: corsHeaders }); }
+        const isActive = matchedUser.status === 'active' && !enforcement.frozen;
         return new Response(JSON.stringify({
           success: true,
           found: true,
           userId: matchedUser.id,
           username: matchedUser.username,
-          status: matchedUser.status || 'active',
+          status: enforcement.frozen ? 'suspended' : matchedUser.status || 'active',
+          tokenVersion: enforcement.tokenVersion, frozenUntil: enforcement.frozenUntil, permanent: enforcement.permanent,
           active: isActive,
           revoked: !isActive
         }), { status: 200, headers: corsHeaders });
