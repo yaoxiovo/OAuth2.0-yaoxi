@@ -151,3 +151,27 @@ test('a successful expiry adjustment remains idempotent when replayed after expi
     assert.equal(repeat.data.frozen, false);
   } finally { Date.now = realNow; }
 });
+
+test('overturning a false positive releases its freeze, removes exactly one strike and never revives old tokens', async () => {
+  const call = objectFixture();
+  const violation = id => call({ action: 'violation', eventId: id, actor: 'lumitape', reason: 'porn', evidence: { requestId: 'ims-' + id } });
+  await violation('wrong-1');
+  const correction = { action: 'overturn', eventId: 'correction-1', actor: 'admin', reason: 'false positive', violationEventId: 'wrong-1' };
+  const released = await call(correction);
+  assert.equal(released.status, 200); assert.equal(released.data.violationCount, 0);
+  assert.equal(released.data.frozen, false); assert.ok(released.data.tokenVersion >= 1);
+  assert.equal((await call(correction)).data.violationCount, 0);
+  assert.equal((await call({ ...correction, eventId: 'correction-2' })).data.violationCount, 0);
+  const next = await violation('valid-1');
+  assert.equal(next.data.violationCount, 1);
+  assert.equal(Date.parse(next.data.frozenUntil) - Date.parse(next.data.frozenAt), 7 * 86400_000);
+  assert.equal((await call({ ...correction, eventId: 'missing', violationEventId: 'not-a-violation' })).status, 404);
+});
+
+test('correcting an older false positive does not clear a different current freeze', async () => {
+  const call = objectFixture();
+  for (const id of ['older', 'current']) await call({ action: 'violation', eventId: id, actor: 'lumitape', reason: 'porn', evidence: { requestId: 'ims-' + id } });
+  const result = await call({ action: 'overturn', eventId: 'correct-older', actor: 'admin', reason: 'false positive', violationEventId: 'older' });
+  assert.equal(result.data.violationCount, 1); assert.equal(result.data.frozen, true);
+  assert.equal(result.data.freezeEventId, 'current');
+});

@@ -18,9 +18,10 @@ production issuer without porting these checks.
 
 The complete protocol, activation gates and outstanding product decisions are
 recorded in `/root/lumitape/docs/ACCOUNT_ENFORCEMENT.md`. In particular: failure
-policy for freeze requests, and whether correcting a false positive removes the
-strike, are not decided. Manual unfreeze currently represents early release,
-not overturning a moderation verdict. Do not activate the new punishment path
+policy for freeze requests, is not decided. The user has confirmed that overturning a false positive removes
+that specific strike. The new overturn action references the original event,
+removes one strike exactly once and releases only the freeze caused by that event.
+Manual unfreeze remains early release without overturning a verdict. Do not activate the new punishment path
 until those contracts are settled.
 
 Revocation is authoritative at the identity provider. Every relying application

@@ -1,7 +1,7 @@
 // One strongly consistent Durable Object per identity. Never use the global
 // configuration KV as a revocation ledger: its cached reads can be stale.
 const DAY = 86_400_000;
-const initialState = () => ({ violationCount: 0, tokenVersion: 0, frozenAt: null, frozenUntil: null, permanent: false });
+const initialState = () => ({ violationCount: 0, tokenVersion: 0, frozenAt: null, frozenUntil: null, permanent: false, freezeEventId: null });
 const validText = value => typeof value === 'string' && value.length > 0 && value.length <= 300 && !/[\u0000-\u001f]/.test(value);
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
@@ -17,12 +17,13 @@ export class AccountEnforcement {
     if (body.action === 'status') {
       return json({ success: true, data: enforcementView(await this.storage.get('state') || initialState()) });
     }
-    if (!['violation', 'unfreeze', 'adjust'].includes(body.action) || !validText(body.eventId) || !validText(body.actor) || !validText(body.reason)) {
+    if (!['violation', 'unfreeze', 'adjust', 'overturn'].includes(body.action) || !validText(body.eventId) || !validText(body.actor) || !validText(body.reason)) {
       return json({ success: false, code: 'INVALID_ENFORCEMENT_EVENT' }, 400);
     }
     if (body.action === 'violation' && (body.reason !== 'porn' || !validText(body.evidence?.requestId))) {
       return json({ success: false, code: 'CONFIRMED_PORN_EVIDENCE_REQUIRED' }, 400);
     }
+    if (body.action === 'overturn' && !validText(body.violationEventId)) return json({ success: false, code: 'VIOLATION_EVENT_REQUIRED' }, 400);
     // Manual adjustment supports finite, future instants only. The allowed range
     // and manual permanent freezes remain product questions, so aren't invented.
     if (body.action === 'adjust' && (typeof body.frozenUntil !== 'string' || !Number.isFinite(Date.parse(body.frozenUntil)))) {
@@ -30,7 +31,9 @@ export class AccountEnforcement {
     }
     return this.storage.transaction(async tx => {
       const key = 'event:' + body.eventId;
-      const fingerprint = JSON.stringify([body.action, body.actor, body.reason, body.evidence || null, body.frozenUntil || null]);
+      const fingerprintParts = [body.action, body.actor, body.reason, body.evidence || null, body.frozenUntil || null];
+      if (body.action === 'overturn') fingerprintParts.push(body.violationEventId);
+      const fingerprint = JSON.stringify(fingerprintParts);
       const previous = await tx.get(key);
       if (previous) {
         if (previous.fingerprint !== fingerprint) return json({ success: false, code: 'EVENT_CONFLICT' }, 409);
@@ -40,15 +43,28 @@ export class AccountEnforcement {
       const state = await tx.get('state') || initialState();
       const now = Date.now();
       if (body.action === 'adjust' && Date.parse(body.frozenUntil) <= now) return json({ success: false, code: 'FUTURE_EXPIRY_REQUIRED' }, 400);
-      const changesState = body.action !== 'unfreeze' || enforcementView(state, now).frozen;
+      let changesState = body.action !== 'unfreeze' || enforcementView(state, now).frozen;
       if (body.action === 'violation') {
         state.violationCount++;
         state.frozenAt = new Date(now).toISOString();
+        state.freezeEventId = body.eventId;
         state.permanent = state.violationCount >= 3;
         state.frozenUntil = state.permanent ? null : new Date(now + (state.violationCount === 1 ? 7 : 30) * DAY).toISOString();
       } else if (body.action === 'unfreeze') {
         state.frozenUntil = null;
         state.permanent = false;
+      } else if (body.action === 'overturn') {
+        const violationKey = 'event:' + body.violationEventId;
+        const violation = await tx.get(violationKey);
+        if (!violation || JSON.parse(violation.fingerprint)[0] !== 'violation') return json({ success: false, code: 'VIOLATION_NOT_FOUND' }, 404);
+        if (violation.overturned) return json({ success: true, duplicate: true, data: enforcementView(state, now) });
+        if (state.violationCount < 1) return json({ success: false, code: 'VIOLATION_LEDGER_CONFLICT' }, 409);
+        changesState = state.freezeEventId === body.violationEventId && enforcementView(state, now).frozen;
+        state.violationCount--;
+        if (state.freezeEventId === body.violationEventId) {
+          state.frozenUntil = null; state.permanent = false; state.freezeEventId = null;
+        }
+        await tx.put(violationKey, { ...violation, overturned: true, overturnedAt: new Date(now).toISOString(), overturnedBy: body.actor, correctionEventId: body.eventId, correctionReason: body.reason });
       } else {
         if (!enforcementView(state, now).frozen) return json({ success: false, code: 'ACCOUNT_NOT_FROZEN' }, 409);
         state.frozenUntil = new Date(body.frozenUntil).toISOString();
@@ -57,7 +73,7 @@ export class AccountEnforcement {
       // Never reset this on expiry or manual release. Old credentials stay dead.
       if (changesState) state.tokenVersion++;
       await tx.put('state', state);
-      await tx.put(key, { fingerprint, time: new Date(now).toISOString(), tokenVersion: state.tokenVersion });
+      await tx.put(key, { fingerprint, action: body.action, actor: body.actor, reason: body.reason, time: new Date(now).toISOString(), tokenVersion: state.tokenVersion });
       return json({ success: true, data: enforcementView(state, now) });
     });
   }
