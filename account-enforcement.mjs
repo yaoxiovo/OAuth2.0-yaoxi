@@ -25,8 +25,8 @@ export class AccountEnforcement {
     }
     // Manual adjustment supports finite, future instants only. The allowed range
     // and manual permanent freezes remain product questions, so aren't invented.
-    if (body.action === 'adjust' && (typeof body.frozenUntil !== 'string' || !Number.isFinite(Date.parse(body.frozenUntil)) || Date.parse(body.frozenUntil) <= Date.now())) {
-      return json({ success: false, code: 'FUTURE_EXPIRY_REQUIRED' }, 400);
+    if (body.action === 'adjust' && (typeof body.frozenUntil !== 'string' || !Number.isFinite(Date.parse(body.frozenUntil)))) {
+      return json({ success: false, code: 'INVALID_EXPIRY' }, 400);
     }
     return this.storage.transaction(async tx => {
       const key = 'event:' + body.eventId;
@@ -39,6 +39,8 @@ export class AccountEnforcement {
       }
       const state = await tx.get('state') || initialState();
       const now = Date.now();
+      if (body.action === 'adjust' && Date.parse(body.frozenUntil) <= now) return json({ success: false, code: 'FUTURE_EXPIRY_REQUIRED' }, 400);
+      const changesState = body.action !== 'unfreeze' || enforcementView(state, now).frozen;
       if (body.action === 'violation') {
         state.violationCount++;
         state.frozenAt = new Date(now).toISOString();
@@ -53,7 +55,7 @@ export class AccountEnforcement {
         state.permanent = false;
       }
       // Never reset this on expiry or manual release. Old credentials stay dead.
-      state.tokenVersion++;
+      if (changesState) state.tokenVersion++;
       await tx.put('state', state);
       await tx.put(key, { fingerprint, time: new Date(now).toISOString(), tokenVersion: state.tokenVersion });
       return json({ success: true, data: enforcementView(state, now) });

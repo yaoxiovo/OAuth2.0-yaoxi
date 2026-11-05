@@ -134,3 +134,20 @@ test('parallel redeliveries count one violation; review and malformed events can
   assert.equal((await call({ ...event, eventId: 'missing', evidence: {} })).status, 400);
   assert.equal((await call({ action: 'status' })).data.violationCount, 1);
 });
+
+test('a successful expiry adjustment remains idempotent when replayed after expiry; repeated release does not revoke new credentials', async () => {
+  const call = objectFixture();
+  const realNow = Date.now; let now = realNow(); Date.now = () => now;
+  try {
+    await call({ action: 'violation', eventId: 'one', actor: 'lumitape', reason: 'porn', evidence: { requestId: 'ims-one' } });
+    const adjustment = { action: 'adjust', eventId: 'adjust', actor: 'admin', reason: 'release earlier', frozenUntil: new Date(now + 1000).toISOString() };
+    assert.equal((await call(adjustment)).status, 200);
+    now += 2000;
+    const replay = await call(adjustment);
+    assert.equal(replay.status, 200); assert.equal(replay.duplicate, true);
+    const first = await call({ action: 'unfreeze', eventId: 'release-one', actor: 'admin', reason: 'release' });
+    const repeat = await call({ action: 'unfreeze', eventId: 'release-two', actor: 'admin', reason: 'release' });
+    assert.equal(first.data.tokenVersion, repeat.data.tokenVersion);
+    assert.equal(repeat.data.frozen, false);
+  } finally { Date.now = realNow; }
+});
