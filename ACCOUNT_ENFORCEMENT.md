@@ -1,21 +1,20 @@
 # Unified account enforcement
 
-Production deployed on 2026-11-05 from source a39a7bb; Worker version
-96064fd0-0f19-492e-92ba-30c1932c9739. The confirmed ladder is
-7 fixed days, 30 fixed days, then permanent on the third and subsequent confirmed
-porn violation. Review outcomes and provider errors must never create violations.
+Production runs on the Tencent Seoul Node.js service with local SQLite.
+The confirmed ladder is 7 fixed days, 30 fixed days, then permanent on the third
+and subsequent confirmed porn violation. Review outcomes and provider errors must
+never create violations.
 
-`account-enforcement.mjs` owns the Durable Object, per-identity ledger, idempotency,
-dedicated service HMAC verification and signed identity-token verification.
-`worker.js` provides `/api/internal/account-enforcement`, `/api/auth/introspect`,
-signing-time account checks and revocation metadata on `/api/status`.
+`account-enforcement.mjs` owns the per-identity ledger, idempotency, dedicated
+service HMAC verification and signed identity-token verification. Its storage is
+provided by `server/storage.mjs`, with serialized SQLite transactions.
+`worker.js` is the shared HTTP handler imported by `server/main.mjs`; its filename
+does not imply a Cloudflare deployment. Production needs no KV/DO namespace.
 
-Deployment requires the `ACCOUNT_ENFORCEMENT` SQLite Durable Object binding and
-migration in wrangler.jsonc, the private runtime `JWT_SECRET` and the dedicated
-`LUMITAPE_ENFORCEMENT_SECRET` (at least 32 random characters). No secret defaults
-are accepted by the new service API or introspection endpoint. The legacy Pages
-functions are not this deployment target and must not be used as an alternative
-production issuer without porting these checks.
+Deployment requires the local SQLite database, imported account configuration,
+private `JWT_SECRET` and `LUMITAPE_ENFORCEMENT_SECRET` (at least 32 characters).
+See [server/DEPLOYMENT.md](server/DEPLOYMENT.md). Legacy Pages functions are
+historical source only and are excluded from the production build.
 
 The complete protocol, activation gates and outstanding product decisions are
 recorded in `/root/lumitape/docs/ACCOUNT_ENFORCEMENT.md`. In particular: failure
@@ -32,10 +31,9 @@ implement immediate global revocation. Expiry and manual release never reset
 the credential version; old sessions must not resume. No refresh-token issuance
 or refresh endpoint was found in the current provider implementation.
 
-Validation: `npm run test:enforcement`, `npm run build`, and
-`wrangler deploy --dry-run`. Local workerd startup may fail on hosts where its
-TCMalloc virtual address allocation is unsupported; a successful bundle dry-run
-does not prove a deployed Durable Object runtime has been tested.
+Validation: `npm test` and `npm run build`. HTTP integration tests use real
+local SQLite and exercise password login, restart persistence, signed service
+mutations, revocation and release without Cloudflare compute or storage.
 
 Production account management and false-positive correction are enabled in the
 existing wallpaper admin. Automatic punishment has a separate activation flag

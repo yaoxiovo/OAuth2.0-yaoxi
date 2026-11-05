@@ -2,8 +2,8 @@ import { accountEnforcement, readEnforcement, verifyServiceRequest, verifyIdenti
 export { AccountEnforcement } from './account-enforcement.mjs';
 
 /**
- * worker.js - Cloudflare Worker Entry Point for accounts.yaoxi.cloud
- * 适配 Cloudflare Workers with Static Assets 部署体系
+ * worker.js - 统一认证 HTTP 处理模块，由 server/main.mjs 调用
+ * 配置、处罚状态和静态资源均由本机适配器提供
  *
  * 安全特性清单:
  * 1. 严格 URL 参数白名单校验 (非法参数直接拦截下发 Google 400)
@@ -1124,6 +1124,7 @@ export default {
     // 5. 放行静态资源文件、管理后台 (admin.html) 与测试页面
     if (
       request.method === 'OPTIONS' ||
+      pathname === '/channel-sync.html' ||
       pathname.endsWith('.css') ||
       pathname.endsWith('.js') ||
       pathname.endsWith('.png') ||

@@ -7,7 +7,7 @@
  * 2. 泛域名与安全规则自检 (Domain whitelist regression unit tests)
  * 3. 生产版本号与防缓存注入 (Cache-busting version stamping for CSS/JS)
  * 4. 同步 accounts-login.html -> index.html (确保单点登录与主页 100% 同步)
- * 5. 边缘中间件同步 (_middleware.js -> cloudflare-worker-400.js)
+ * 5. 清理旧发布目录，避免历史服务端代码混入静态资源
  * 6. 生成 dist/ 静态资源目录，由 Node.js 服务提供访问
  */
 
@@ -33,14 +33,7 @@ const jsFiles = [
   path.join('server', 'storage.mjs'),
   path.join('server', 'assets.mjs'),
   path.join('server', 'import.mjs'),
-  path.join('functions', '_middleware.js'),
-  path.join('functions', 'api', 'config.js'),
-  path.join('functions', 'api', 'login.js'),
-  path.join('functions', 'api', 'status.js'),
-  path.join('functions', 'api', 'register.js'),
-  path.join('functions', 'api', 'lookup.js'),
-  path.join('sdk', 'yaoxi-auth.js'),
-  'cloudflare-worker-400.js'
+  path.join('sdk', 'yaoxi-auth.js')
 ];
 
 for (const file of jsFiles) {
@@ -117,43 +110,12 @@ const indexHtmlPath = path.join(ROOT_DIR, 'index.html');
 fs.writeFileSync(indexHtmlPath, loginHtml, 'utf8');
 console.log('  ✅ index.html 已与 accounts-login.html 完全同步');
 
-// 5. 边缘中间件与 Cloudflare Worker 同步
-console.log('\n[5/6] ⚡ 同步边缘安全拦截器...');
-const middlewarePath = path.join(ROOT_DIR, 'functions', '_middleware.js');
-const workerPath = path.join(ROOT_DIR, 'cloudflare-worker-400.js');
-
-if (fs.existsSync(middlewarePath)) {
-  let mwCode = fs.readFileSync(middlewarePath, 'utf8');
-  let workerCode = mwCode.replace(
-    'export async function onRequest(context) {',
-    'export default {\n  async fetch(request, env, ctx) {'
-  );
-  workerCode = workerCode.replace('const url = new URL(context.request.url);', 'const url = new URL(request.url);');
-  workerCode = workerCode.replace('context.request.method', 'request.method');
-  workerCode = workerCode.replace(/return context\.next\(\);/g, 'return fetch(request);');
-  workerCode += '\n};\n';
-  fs.writeFileSync(workerPath, workerCode, 'utf8');
-  console.log('  ✅ functions/_middleware.js 与 cloudflare-worker-400.js 保持一致');
-}
+// 5. 从空目录构建；旧 Pages/Workers 代码不能作为生产静态资源发布。
+console.log('\n[5/6] 清理旧静态资源...');
+fs.rmSync(DIST_DIR, { recursive: true, force: true });
 
 // 6. 生成 dist/ 生产输出目录
 console.log('\n[6/6] 📁 生成生产发布目录 (dist/)...');
-
-function copyDirRecursive(src, dest) {
-  if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist') {
-        copyDirRecursive(srcPath, destPath);
-      }
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
 
 if (!fs.existsSync(DIST_DIR)) {
   fs.mkdirSync(DIST_DIR, { recursive: true });
@@ -169,10 +131,7 @@ const copyFiles = [
   'admin.js',
   'client-blog.html',
   'blog-login.css',
-  '_headers',
-  '_routes.json',
-  '.assetsignore',
-  'cloudflare-worker-400.js'
+  'channel-sync.html'
 ];
 
 for (const file of copyFiles) {
@@ -182,10 +141,10 @@ for (const file of copyFiles) {
   }
 }
 
-copyDirRecursive(path.join(ROOT_DIR, 'functions'), path.join(DIST_DIR, 'functions'));
-copyDirRecursive(path.join(ROOT_DIR, 'sdk'), path.join(DIST_DIR, 'sdk'));
+fs.mkdirSync(path.join(DIST_DIR, 'sdk'), { recursive: true });
+fs.copyFileSync(path.join(ROOT_DIR, 'sdk', 'yaoxi-auth.js'), path.join(DIST_DIR, 'sdk', 'yaoxi-auth.js'));
 
-console.log('  ✅ dist/ 生产就绪 (兼容根目录或 dist 输出目录)');
+console.log('  ✅ dist/ 静态资源已就绪，由本机 Node.js 提供服务');
 console.log('\n======================================================');
 console.log(' 🎉 构建完成！所有静态资源与安全配置均已就绪。');
 console.log(' 💡 构建命令: npm run build');

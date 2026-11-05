@@ -12,7 +12,7 @@
 
 - **泛域名全面支持**: 支持 `*.yaoxi.wiki` 与 `*.yaoxi.cloud` 全子域，任何携带合法防伪凭证的子域均可无缝拉起登录。
 - **零前端调试干扰**: 移除开发期 JWT 数据流、Base64 串与倒计时；错误状态采用标准 Google 400 简洁提示，不暴露任何内部安全参数。
-- **开放自助注册 (审核制)**: 登录页「创建账号」支持访客自助注册（用户名/显示名/邮箱/密码），由管理后台「开放自助注册策略」控制总开关与审核模式（默认需管理员审核）；Turnstile 服务端 siteverify + KV IP 限流防批量滥用，账号默认角色 `member`，待审核账号需管理员在控制台一键「通过」后方可登录。
+- **开放自助注册 (审核制)**: 登录页「创建账号」支持访客自助注册（用户名/显示名/邮箱/密码），由管理后台「开放自助注册策略」控制总开关与审核模式（默认需管理员审核）；Turnstile 服务端 siteverify + SQLite IP 限流防批量滥用，账号默认角色 `member`，待审核账号需管理员在控制台一键「通过」后方可登录。
 - **用户目录隐私加固**: 公开配置接口不再下发任何账号清单 (含邮箱)；登录首步改为服务端 `/api/lookup` 账号解析，仅返回掩码邮箱与最小必要状态信息，杜绝已注册用户邮箱清单被任意访客拉取。
 - **开箱即用 SDK (`sdk/yaoxi-auth.js`)**: 类似 Google 登录 SDK，支持 Popup 弹窗 (1060x620) 与 Redirect 跳转两种接入方式，自动监听 postMessage 跨域回传。
 - **个人账号个性化平台凭据下发**: 支持在管理后台为指定账号绑定 GitHub PAT、Cloudflare API Token 等平台凭据，在用户授权登录时随 JWT Claims 与 Token Bundle 一同安全下发给受信任客户端，供客户端无缝调取第三方开放平台能力。
@@ -31,15 +31,13 @@ yaoxi-account/
 ├── admin.html                 # 🎛️ Google Admin 控制台 (后台可视化管理所有功能数据)
 ├── admin.css                  # 后台管理控制台 Material 3 响应式设计系统
 ├── admin.js                   # 后台全量 CRUD 逻辑、配置持久化与审计监控
-├── functions/
-│   ├── _middleware.js         # Cloudflare Pages 边缘中间件 (严格白名单 + 泛域名 400 校验)
-│   └── api/
-│       ├── config.js          # 统一配置存储与 KV 持久化 API (/api/config)
-│       ├── login.js           # 服务端密码核验与 JWT 签发 API (/api/login)
-│       ├── status.js          # 账号实时状态查询与吊销检测 API (/api/status)
-│       ├── register.js        # 开放自助注册 API (/api/register)
-│       └── lookup.js          # 服务端账号解析 API (/api/lookup)
-├── cloudflare-worker-400.js   # 备用 Cloudflare Worker 边缘拦截器
+├── server/
+│   ├── main.mjs              # Node.js HTTP 服务，监听本机 3010
+│   ├── storage.mjs           # SQLite 配置、限流与处罚事务存储
+│   ├── assets.mjs            # 静态文件访问与私有路径保护
+│   └── deploy/               # systemd、Nginx 与备份配置
+├── worker.js                 # 本机服务复用的认证 HTTP 处理逻辑
+├── account-enforcement.mjs   # 处罚、吊销与服务签名逻辑
 ├── sdk/
 │   ├── yaoxi-auth.js          # 统一认证客户端接入 SDK (UMD/ESM/Browser)
 │   └── README.md              # 📖 SDK 官方接入指南 (架构/API/Vue/React/博客接入实战)
@@ -71,8 +69,8 @@ YaoxiAuth SDK 提供了类似于 Google Identity Services (GSI) 的开箱即用�
 sequenceDiagram
     autonumber
     actor Guest as 访客 (新用户)
-    participant SSO as 统一认证中心 (accounts.yaoxi.cloud)
-    participant KV as Cloudflare KV (配置与账号存储)
+    participant SSO as 统一认证中心 (account.yaoxiovo.cn)
+    participant KV as 首尔 SQLite (配置与账号存储)
     actor Admin as 管理员 (admin 管理控制台)
 
     Guest->>SSO: 点击【创建账号】填写用户名 / 显示名 / 邮箱 / 密码
@@ -87,7 +85,7 @@ sequenceDiagram
 
 > 管理员可在控制台「账号与凭证 → 开放自助注册策略」随时开关自助注册入口与审核模式（关闭审核时注册即自动激活并直接完成登录握手）。
 >
-> 人机验证：注册表单内嵌独立 Cloudflare Turnstile 组件（`action=register` 操作域）；在「安全与验签」中配置 Turnstile Secret Key（或环境变量 `TURNSTILE_SECRET_KEY`）后，`/api/register` 与 `/api/lookup` 将在服务端向 Cloudflare 强制执行 siteverify 真伪校验（含操作域防复用校验）；未配置密钥时退化为令牌存在性软校验，KV IP 限流仍作为滥用硬上限兜底。
+> 人机验证：注册表单内嵌独立 Cloudflare Turnstile 组件（`action=register` 操作域）；在「安全与验签」中配置 Turnstile Secret Key（或环境变量 `TURNSTILE_SECRET_KEY`）后，`/api/register` 与 `/api/lookup` 将在服务端向 Cloudflare 强制执行 siteverify 真伪校验（含操作域防复用校验）；未配置密钥时退化为令牌存在性软校验，SQLite IP 限流仍作为滥用硬上限兜底。
 
 ---
 
@@ -98,7 +96,7 @@ sequenceDiagram
     autonumber
     actor User as 管理员 yaoxi
     participant Blog as 博客系统 (blog.yaoxi.wiki)
-    participant SSO as 统一认证中心 (accounts.yaoxi.cloud)
+    participant SSO as 统一认证中心 (account.yaoxiovo.cn)
     participant HW as 设备生物硬件 (Touch ID/Face ID/FIDO2)
 
     User->>Blog: 点击【管理员登录 / 解锁深度内容】
@@ -148,12 +146,19 @@ sequenceDiagram
 
 ---
 
-## 🚀 本地实时测试与访问
+## 🚀 本机运行与验证
+
+需要 Node.js 22.13+（22.x）。生产启动由 systemd 管理；完整环境、导入和回滚步骤见 [部署文档](server/DEPLOYMENT.md)。
 
 ```bash
-# 启动本地服务
-python3 -m http.server 8080 --directory /mnt/sdcard/google-login-ui
+npm test
+npm run build
+# 设置 SSO_DB_PATH、JWT_SECRET、LUMITAPE_ENFORCEMENT_SECRET 后启动
+npm start
 ```
 
-- 🏛️ **[accounts.yaoxi.cloud 认证中心](http://localhost:8080/accounts-login.html)**
-- 🌐 **[blog.yaoxi.wiki 博客客户端系统](http://localhost:8080/client-blog.html)**
+数据库必须先导入有效账号配置，否则服务拒绝启动。直接入口为 `/admin.html`；登录页需要合法客户端握手参数。静态 HTTP 服务不能提供认证 API。
+
+`functions/`、`cloudflare-worker-400.js` 和根目录 Pages 配置仅作历史源码保留，不参与构建、运行或部署。`build.py` 统一调用 Node.js 构建。`dist/` 只包含前端静态资源。
+
+Cloudflare DNS/CDN、Turnstile 和证书 DNS 验证仍保留；账号配置、签发密钥、会话验证、处罚状态、备份和应用运行均在首尔本机。旧 JWT issuer 保持兼容，不代表请求会访问旧 Worker。
