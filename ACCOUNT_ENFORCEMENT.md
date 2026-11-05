@@ -1,6 +1,7 @@
 # Unified account enforcement
 
-Implementation worktree based on ae71598. Not deployed. The confirmed ladder is
+Production deployed on 2026-11-05 from source a39a7bb; Worker version
+96064fd0-0f19-492e-92ba-30c1932c9739. The confirmed ladder is
 7 fixed days, 30 fixed days, then permanent on the third and subsequent confirmed
 porn violation. Review outcomes and provider errors must never create violations.
 
@@ -18,7 +19,7 @@ production issuer without porting these checks.
 
 The complete protocol, activation gates and outstanding product decisions are
 recorded in `/root/lumitape/docs/ACCOUNT_ENFORCEMENT.md`. In particular: failure
-policy for freeze requests, is not decided. The user has confirmed that overturning a false positive removes
+policy for freeze requests is not decided. The user has confirmed that overturning a false positive removes
 that specific strike. The new overturn action references the original event,
 removes one strike exactly once and releases only the freeze caused by that event.
 Manual unfreeze remains early release without overturning a verdict. Do not activate the new punishment path
@@ -35,3 +36,10 @@ Validation: `npm run test:enforcement`, `npm run build`, and
 `wrangler deploy --dry-run`. Local workerd startup may fail on hosts where its
 TCMalloc virtual address allocation is unsupported; a successful bundle dry-run
 does not prove a deployed Durable Object runtime has been tested.
+
+Production account management and false-positive correction are enabled in the
+existing wallpaper admin. Automatic punishment has a separate activation flag
+and remains disabled pending the failure policy and relying-app rollout.
+An isolated real Cloudflare DO runtime passed seven checks (ladder, correction,
+idempotency); the temporary Worker was then deleted. No production user was
+frozen for testing, and no historical moderation log was replayed.
